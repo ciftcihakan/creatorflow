@@ -105,16 +105,19 @@ Start with "Subject: [subject]" then blank line then body. Under 180 words. Refe
     setAiLoading(false)
   }
 
-  async function classifyReply() {
-    setAiLoading(true)
-   const replyText = ai.replyText || `Thanks for reaching out. I'm interested but my rate is ${campaign?.budget_max || '£1,500'}. Could the posting window start a few days later? Happy with exclusivity.`
-  const prompt = `Analyse this influencer reply. Return ONLY valid JSON with: intent (Interested/Negotiating/Declining/Questions only), summary (one sentence), counter_rate (string or null), counter_date (string or null), exclusivity (string), risk (Low/Medium/High).
+async function classifyReply() {
+  setAiLoading(true)
+  setAi((p: any) => ({ ...p, reply: null }))
+  const replyText = ai.replyText || ''
+  if (!replyText) { setAiLoading(false); return }
+  const prompt = `Analyse this influencer reply. Return ONLY valid JSON with no markdown, no backticks, no explanation: intent (Interested/Negotiating/Declining/Questions only), summary (one sentence), counter_rate (string or null), counter_date (string or null), exclusivity (string), risk (Low/Medium/High).
 
 Reply: "${replyText}"`
-    const result = await callClaude(prompt, 300)
-    setAi((p: any) => ({ ...p, reply: result }))
-    setAiLoading(false)
-  }
+  const result = await callClaude(prompt, 300)
+  const cleaned = result.replace(/```json|```/g, '').trim()
+  setAi((p: any) => ({ ...p, reply: cleaned }))
+  setAiLoading(false)
+}
 
   async function genCounter() {
     setAiLoading(true)
@@ -312,7 +315,7 @@ function emailDraft(content: string) {
       <div style={{ fontSize: '11px', color: '#5a5a70', fontFamily: 'monospace', marginBottom: '8px' }}>Paste {creator?.name}'s reply below</div>
       <textarea
         value={ai.replyText || ''}
-        onChange={e => setAi((p: any) => ({ ...p, replyText: e.target.value }))}
+        onChange={e => setAi((p: any) => ({ ...p, replyText: e.target.value, reply: null }))}
         placeholder={`Paste ${creator?.name}'s reply here — copy it from your email inbox and paste it in...`}
         style={{ width: '100%', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '12px 14px', fontSize: '13px', color: '#e8e8f0', fontFamily: 'sans-serif', lineHeight: '1.7', resize: 'vertical', minHeight: '160px', outline: 'none', boxSizing: 'border-box' as const }}
       />
