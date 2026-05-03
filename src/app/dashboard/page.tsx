@@ -61,8 +61,13 @@ export default function Dashboard() {
             <div style={{fontSize:'11px',color:'#5a5a70'}}>No deals in progress</div>
           </div>
         </div>
-        <div style={{marginTop:'40px'}}>
-          <a href='/campaigns/new' style={{display:'inline-block',background:'#7c6af7',color:'#fff',borderRadius:'8px',padding:'10px 20px',fontSize:'13px',fontWeight:'500',textDecoration:'none'}}>Create your first campaign</a>
+        <div style={{marginTop:'40px',display:'flex',gap:'12px',flexWrap:'wrap'}}>
+          <a href='/pipeline' style={{display:'inline-block',background:'#1e1e24',color:'#a898ff',border:'1px solid rgba(124,106,247,0.3)',borderRadius:'8px',padding:'10px 20px',fontSize:'13px',fontWeight:'500',textDecoration:'none'}}>
+            View pipeline board
+          </a>
+          <a href='/campaigns/new' style={{display:'inline-block',background:'#7c6af7',color:'#fff',borderRadius:'8px',padding:'10px 20px',fontSize:'13px',fontWeight:'500',textDecoration:'none'}}>
+            Create campaign
+          </a>
         </div>
       </div>
     </main>
