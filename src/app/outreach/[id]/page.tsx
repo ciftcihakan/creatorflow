@@ -107,9 +107,10 @@ Start with "Subject: [subject]" then blank line then body. Under 180 words. Refe
 
   async function classifyReply() {
     setAiLoading(true)
-    const prompt = `Analyse this influencer reply. Return ONLY valid JSON with: intent (Interested/Negotiating/Declining/Questions only), summary (one sentence), counter_rate (string or null), counter_date (string or null), exclusivity (string), risk (Low/Medium/High).
+   const replyText = ai.replyText || `Thanks for reaching out. I'm interested but my rate is ${campaign?.budget_max || '£1,500'}. Could the posting window start a few days later? Happy with exclusivity.`
+  const prompt = `Analyse this influencer reply. Return ONLY valid JSON with: intent (Interested/Negotiating/Declining/Questions only), summary (one sentence), counter_rate (string or null), counter_date (string or null), exclusivity (string), risk (Low/Medium/High).
 
-Reply: "Thanks for reaching out — ${campaign?.brand || 'your brand'} looks great and feels like a natural fit. I am definitely interested! The budget feels a bit low for ${campaign?.deliverables || 'the deliverables'}. My rate is ${campaign?.budget_max || '£1,500'}. Could the posting window start a few days later? Happy with exclusivity. ${creator?.name}"`
+Reply: "${replyText}"`
     const result = await callClaude(prompt, 300)
     setAi((p: any) => ({ ...p, reply: result }))
     setAiLoading(false)
@@ -134,6 +135,7 @@ Reply: "Thanks for reaching out — ${campaign?.brand || 'your brand'} looks gre
     if (step === 0 && !ai.email) { await genEmail(); return }
     if (step === 0 && ai.email && !emailSent) { await sendEmail(); setDone(p => new Set([...p, step])); setStep(s => Math.min(s + 1, STEPS.length - 1)); return }
     if (step === 0 && emailSent) { setDone(p => new Set([...p, step])); setStep(s => Math.min(s + 1, STEPS.length - 1)); return }
+    if (step === 1 && !ai.replyText) { return }
     if (step === 1 && !ai.reply) { await classifyReply(); return }
     if (step === 3 && !ai.counter) { await genCounter(); return }
     if (step === 5 && !ai.contract) { await genContract(); return }
@@ -303,22 +305,25 @@ function emailDraft(content: string) {
           )}
 
           {step === 1 && (
-            <div>
-              <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px', marginBottom: '14px' }}>
-                <div style={{ fontSize: '11px', color: '#5a5a70', fontFamily: 'monospace', marginBottom: '6px' }}>You sent outreach · 2 days ago</div>
-                <div style={{ height: '1px', background: 'rgba(255,255,255,0.05)', margin: '12px 0' }} />
-                <div style={{ fontSize: '11px', color: '#5a5a70', fontFamily: 'monospace', marginBottom: '6px' }}>{creator?.name} replied · Just now</div>
-                <div style={{ fontSize: '13px', color: '#e8e8f0', lineHeight: '1.7' }}>
-                  Hi there,<br /><br />
-                  Thanks for reaching out — {campaign?.brand || 'your brand'} looks gorgeous and feels like a natural fit.<br /><br />
-                  I'm definitely interested! The budget feels a bit low for {campaign?.deliverables || 'the deliverables'}. My rate is {campaign?.budget_max || '£1,500'}. Could the posting window start a few days later?<br /><br />
-                  Happy with the exclusivity terms.<br /><br />
-                  {creator?.name} x
-                </div>
-              </div>
-              {ai.reply ? classifyResult(ai.reply) : <div style={{ textAlign: 'center' as const, padding: '20px', color: '#5a5a70', fontSize: '13px' }}>Click "Classify reply" to extract terms</div>}
-            </div>
-          )}
+  <div>
+    <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px', marginBottom: '14px' }}>
+      <div style={{ fontSize: '11px', color: '#5a5a70', fontFamily: 'monospace', marginBottom: '6px' }}>You sent outreach · earlier</div>
+      <div style={{ height: '1px', background: 'rgba(255,255,255,0.05)', margin: '12px 0' }} />
+      <div style={{ fontSize: '11px', color: '#5a5a70', fontFamily: 'monospace', marginBottom: '8px' }}>Paste {creator?.name}'s reply below</div>
+      <textarea
+        value={ai.replyText || ''}
+        onChange={e => setAi((p: any) => ({ ...p, replyText: e.target.value }))}
+        placeholder={`Paste ${creator?.name}'s reply here — copy it from your email inbox and paste it in...`}
+        style={{ width: '100%', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '12px 14px', fontSize: '13px', color: '#e8e8f0', fontFamily: 'sans-serif', lineHeight: '1.7', resize: 'vertical', minHeight: '160px', outline: 'none', boxSizing: 'border-box' as const }}
+      />
+    </div>
+    {ai.reply ? classifyResult(ai.reply) : (
+      <div style={{ fontSize: '11px', color: '#5a5a70', background: '#1e1e24', borderRadius: '6px', padding: '8px 12px', borderLeft: '2px solid rgba(124,106,247,0.3)', lineHeight: '1.5' }}>
+        Paste the reply above then click "Classify reply" — Claude will extract their intent, rate counter, and any date requests automatically.
+      </div>
+    )}
+  </div>
+)}
 
           {step === 2 && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
@@ -520,11 +525,12 @@ function emailDraft(content: string) {
             </button>
           )}
           <div style={{ flex: 1 }} />
+          {step === 1 && !ai.replyText && !ai.reply && <span style={{ fontSize: '11px', color: '#f5a623', fontFamily: 'monospace' }}>Paste the reply first</span>}
           {step === 2 && !approved && <span style={{ fontSize: '11px', color: '#f5a623', fontFamily: 'monospace' }}>Approve terms first</span>}
           {step === 6 && checked.size < 8 && <span style={{ fontSize: '11px', color: '#f5a623', fontFamily: 'monospace' }}>{checked.size}/8 items reviewed</span>}
           <button
             onClick={handleNext}
-            disabled={aiLoading || (step === 2 && !approved) || (step === 6 && checked.size < 8)}
+            disabled={aiLoading || (step === 1 && !ai.replyText && !ai.reply) || (step === 2 && !approved) || (step === 6 && checked.size < 8)}
             style={{ padding: '9px 20px', borderRadius: '6px', background: '#7c6af7', color: '#fff', border: 'none', fontSize: '13px', fontWeight: '500', cursor: aiLoading ? 'not-allowed' : 'pointer', opacity: aiLoading || (step === 2 && !approved) || (step === 6 && checked.size < 8) ? 0.5 : 1, fontFamily: 'sans-serif' }}
           >
             {step === 0 && !ai.email ? 'Generate email' : step === 0 && ai.email && !emailSent && creator?.email ? 'Send email' : step === 1 && !ai.reply ? 'Classify reply' : step === 3 && !ai.counter ? 'Draft counter-offer' : step === 5 && !ai.contract ? 'Generate contract' : step === 8 ? 'Mark as signed' : 'Next'}
