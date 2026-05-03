@@ -1,4 +1,3 @@
-
 'use client'
 
 import { useEffect, useState } from 'react'
@@ -28,6 +27,7 @@ export default function OutreachFlow() {
   const [loading, setLoading] = useState(true)
   const [aiLoading, setAiLoading] = useState(false)
   const [approved, setApproved] = useState(false)
+  const [emailSent, setEmailSent] = useState(false)
   const router = useRouter()
   const params = useParams()
 
@@ -56,6 +56,26 @@ export default function OutreachFlow() {
     })
     const data = await res.json()
     return data.text || ''
+  }
+
+  async function sendEmail() {
+    if (!creator?.email) return
+    setAiLoading(true)
+    const lines = ai.email.split('\n')
+    const subject = lines[0].replace('Subject:', '').trim()
+    const body = lines.slice(1).join('\n').trim()
+    await fetch('/api/send-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: creator.email,
+        subject,
+        body,
+        fromName: campaign?.agency_name || 'The Agency',
+      }),
+    })
+    setEmailSent(true)
+    setAiLoading(false)
   }
 
   function briefCtx() {
@@ -112,6 +132,8 @@ Reply: "Thanks for reaching out — ${campaign?.brand || 'your brand'} looks gre
 
   async function handleNext() {
     if (step === 0 && !ai.email) { await genEmail(); return }
+    if (step === 0 && ai.email && !emailSent) { await sendEmail(); setDone(p => new Set([...p, step])); setStep(s => Math.min(s + 1, STEPS.length - 1)); return }
+    if (step === 0 && emailSent) { setDone(p => new Set([...p, step])); setStep(s => Math.min(s + 1, STEPS.length - 1)); return }
     if (step === 1 && !ai.reply) { await classifyReply(); return }
     if (step === 3 && !ai.counter) { await genCounter(); return }
     if (step === 5 && !ai.contract) { await genContract(); return }
@@ -124,22 +146,26 @@ Reply: "Thanks for reaching out — ${campaign?.brand || 'your brand'} looks gre
     setStep(s => Math.min(s + 1, STEPS.length - 1))
   }
 
-  function emailDraft(content: string) {
-    const lines = content.split('\n')
-    const subj = lines[0].replace('Subject:', '').trim()
-    const body = lines.slice(1).join('\n').trim()
-    return (
-      <div>
-        <div style={{ background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '10px 14px', fontSize: '13px', fontWeight: '500', color: '#e8e8f0', marginBottom: '10px', display: 'flex', gap: '8px' }}>
-          <span style={{ color: '#5a5a70', fontSize: '11px', fontFamily: 'monospace', flexShrink: 0 }}>Subject</span>
-          <span>{subj}</span>
-        </div>
-        <textarea defaultValue={body} style={{ width: '100%', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '14px', fontSize: '13px', color: '#e8e8f0', fontFamily: 'sans-serif', lineHeight: '1.7', resize: 'vertical', minHeight: '180px', outline: 'none', boxSizing: 'border-box' as const }} />
-        <button onClick={() => { setAi((p: any) => ({ ...p, email: null })); genEmail() }} style={{ marginTop: '10px', padding: '5px 12px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.07)', background: 'transparent', color: '#9090a8', fontSize: '12px', cursor: 'pointer' }}>Regenerate</button>
+function emailDraft(content: string) {
+  const lines = content.split('\n')
+  const subj = lines[0].replace('Subject:', '').trim()
+  const body = lines.slice(1).join('\n').trim()
+  return (
+    <div>
+      <div style={{ background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '10px 14px', marginBottom: '10px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <span style={{ color: '#5a5a70', fontSize: '11px', fontFamily: 'monospace', flexShrink: 0 }}>Subject</span>
+        <input defaultValue={subj} style={{ background: 'transparent', border: 'none', color: '#e8e8f0', fontSize: '13px', fontWeight: '500', outline: 'none', width: '100%', fontFamily: 'sans-serif' }} />
       </div>
-    )
-  }
-
+      <textarea defaultValue={body} style={{ width: '100%', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '14px', fontSize: '13px', color: '#e8e8f0', fontFamily: 'sans-serif', lineHeight: '1.7', resize: 'vertical', minHeight: '180px', outline: 'none', boxSizing: 'border-box' as const }} />
+      <div style={{ display: 'flex', gap: '8px', marginTop: '10px', alignItems: 'center' }}>
+        <button onClick={() => { setAi((p: any) => ({ ...p, email: null })); setEmailSent(false); genEmail() }} style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.07)', background: 'transparent', color: '#9090a8', fontSize: '12px', cursor: 'pointer' }}>Regenerate</button>
+        {creator?.email && !emailSent && <span style={{ fontSize: '11px', color: '#5a5a70' }}>Will send to {creator.email}</span>}
+        {emailSent && <span style={{ fontSize: '11px', color: '#3ecf8e' }}>✓ Sent to {creator.email}</span>}
+        {!creator?.email && <span style={{ fontSize: '11px', color: '#f5a623' }}>No email address — add one to the creator profile to send</span>}
+      </div>
+    </div>
+  )
+}
   function classifyResult(data: string) {
     let p: any = {}
     try { p = JSON.parse(data) } catch { p = { intent: 'Negotiating', summary: 'Creator is interested but requesting a higher rate and adjusted dates.', counter_rate: campaign?.budget_max || '£1,500', counter_date: 'Adjusted start', exclusivity: 'Agreed', risk: 'Low' } }
@@ -501,7 +527,7 @@ Reply: "Thanks for reaching out — ${campaign?.brand || 'your brand'} looks gre
             disabled={aiLoading || (step === 2 && !approved) || (step === 6 && checked.size < 8)}
             style={{ padding: '9px 20px', borderRadius: '6px', background: '#7c6af7', color: '#fff', border: 'none', fontSize: '13px', fontWeight: '500', cursor: aiLoading ? 'not-allowed' : 'pointer', opacity: aiLoading || (step === 2 && !approved) || (step === 6 && checked.size < 8) ? 0.5 : 1, fontFamily: 'sans-serif' }}
           >
-            {step === 0 && !ai.email ? 'Generate email' : step === 1 && !ai.reply ? 'Classify reply' : step === 3 && !ai.counter ? 'Draft counter-offer' : step === 5 && !ai.contract ? 'Generate contract' : step === 8 ? 'Mark as signed' : 'Next'}
+            {step === 0 && !ai.email ? 'Generate email' : step === 0 && ai.email && !emailSent && creator?.email ? 'Send email' : step === 1 && !ai.reply ? 'Classify reply' : step === 3 && !ai.counter ? 'Draft counter-offer' : step === 5 && !ai.contract ? 'Generate contract' : step === 8 ? 'Mark as signed' : 'Next'}
           </button>
         </div>
       </div>
