@@ -157,7 +157,12 @@ export default function Pipeline() {
                 </select>
               </div>
               <div style={{display:'flex',gap:'8px',marginTop:'14px'}}>
-                <button onClick={()=>setSelected(null)} style={{flex:1,background:'#1e1e24',color:'#9090a8',border:'1px solid rgba(255,255,255,0.07)',borderRadius:'6px',padding:'8px',fontSize:'12px',cursor:'pointer'}}>Close</button>
+                <a href={`/outreach/${selected.id}`} style={{flex:1,background:'rgba(124,106,247,0.12)',color:'#a898ff',border:'1px solid rgba(124,106,247,0.3)',borderRadius:'6px',padding:'8px',fontSize:'12px',textDecoration:'none',textAlign:'center',fontWeight:'500'}}>
+                  Open deal flow
+                </a>
+                <button onClick={()=>setSelected(null)} style={{flex:1,background:'#1e1e24',color:'#9090a8',border:'1px solid rgba(255,255,255,0.07)',borderRadius:'6px',padding:'8px',fontSize:'12px',cursor:'pointer'}}>
+                  Close
+                </button>
               </div>
             </div>
           </div>
