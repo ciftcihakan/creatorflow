@@ -48,8 +48,7 @@ export default function Dashboard() {
           <div style={{background:'#16161a',border:'1px solid rgba(255,255,255,0.07)',borderRadius:'10px',padding:'20px'}}>
             <div style={{fontSize:'11px',color:'#5a5a70',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:'8px'}}>Campaigns</div>
             <div style={{fontSize:'28px',fontWeight:'500',color:'#e8e8f0',marginBottom:'4px'}}>{campaignCount}</div>
-            <div style={{fontSize:'11px',color:'#5a5a70'}}>{campaignCount === 0 ? 'No campaigns yet' : `${campaignCount} active`}</div>
-          </div>
+            <a href="/campaigns" style={{fontSize:'11px',color:'#a898ff',textDecoration:'none'}}>{campaignCount === 0 ? 'No campaigns yet' : `View ${campaignCount} campaign${campaignCount !== 1 ? 's' : ''}`}</a>          </div>
           <div style={{background:'#16161a',border:'1px solid rgba(255,255,255,0.07)',borderRadius:'10px',padding:'20px'}}>
             <div style={{fontSize:'11px',color:'#5a5a70',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:'8px'}}>Creators</div>
             <div style={{fontSize:'28px',fontWeight:'500',color:'#e8e8f0',marginBottom:'4px'}}>0</div>
