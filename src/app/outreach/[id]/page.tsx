@@ -7,9 +7,9 @@ import { supabase } from '@/lib/supabase'
 const STEPS = [
   { title: 'Initial outreach email',   sub: 'AI drafts a personalised email from the campaign brief and creator profile', who: ['AI', 'Agency'], ai: true },
   { title: 'Creator reply received',   sub: 'AI classifies intent and extracts proposed terms',                          who: ['Creator', 'AI'], ai: true },
-  { title: 'Internal rate review',     sub: 'AI surfaces benchmarks and deal summary for sign-off',                     who: ['Agency', 'AI'], ai: true },
+  { title: 'Internal rate review',     sub: 'Review and enter deal fees, approve terms to proceed',                     who: ['Agency', 'AI'], ai: true },
   { title: 'Counter-offer drafted',    sub: 'AI drafts counter-offer based on approved terms',                          who: ['AI', 'Agency'], ai: true },
-  { title: 'Terms agreed',             sub: 'Both sides confirmed — terms are locked',                                  who: ['Agency', 'Creator'], ai: false },
+  { title: 'Terms agreed',             sub: 'Both sides confirmed — edit and lock the final deal',                      who: ['Agency', 'Creator'], ai: false },
   { title: 'Contract generated',       sub: 'AI populates contract from the locked deal summary',                       who: ['AI'], ai: true },
   { title: 'Internal contract review', sub: 'Agency reviews and approves before sending',                               who: ['Agency'], ai: false },
   { title: 'Sent for e-signature',     sub: 'Creator receives signing link',                                            who: ['Agency', 'Creator'], ai: false },
@@ -27,19 +27,34 @@ export default function OutreachFlow() {
   const [checked, setChecked]       = useState<Set<number>>(new Set())
   const [loading, setLoading]       = useState(true)
   const [aiLoading, setAiLoading]   = useState(false)
-  const [approved, setApproved]     = useState(false)
   const [emailSent, setEmailSent]   = useState(false)
-  const router                      = useRouter()
-  const params                      = useParams()
-  const searchParams                = useSearchParams()
-  const campaignId                  = searchParams.get('campaign')
+
+  // inline edit state for step 2
+  const [fees, setFees] = useState({
+    initial_offer:   '',
+    counter_offer:   '',
+    agreed_fee:      '',
+  })
+
+  // inline edit state for step 4
+  const [termsEdit, setTermsEdit] = useState({
+    agreed_fee:       '',
+    deliverables:     '',
+    content_due_date: '',
+    posting_from:     '',
+    posting_to:       '',
+  })
+
+  const router       = useRouter()
+  const params       = useParams()
+  const searchParams = useSearchParams()
+  const campaignId   = searchParams.get('campaign')
 
   useEffect(() => {
     async function load() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/auth/login'); return }
 
-      // Load creator with platforms
       const { data: cr } = await supabase
         .from('creators')
         .select('*, creator_platforms(platform, handle, followers)')
@@ -48,7 +63,6 @@ export default function OutreachFlow() {
       if (!cr) { router.push('/campaigns'); return }
       setCreator(cr)
 
-      // Load campaign
       if (campaignId) {
         const { data: camp } = await supabase
           .from('campaigns')
@@ -57,7 +71,6 @@ export default function OutreachFlow() {
           .single()
         setCampaign(camp)
 
-        // Load campaign_creators deal row
         const { data: deal } = await supabase
           .from('campaign_creators')
           .select('*')
@@ -65,27 +78,64 @@ export default function OutreachFlow() {
           .eq('creator_id', params.id as string)
           .single()
         setDealRow(deal)
-        // Auto-populate completed steps based on deal status
-if (deal) {
-  const statusStepMap: Record<string, number> = {
-    'outreach_sent': 0,
-    'replied':       1,
-    'negotiating':   3,
-    'contract_out':  5,
-    'signed':        8,
-  }
-  const currentStep = statusStepMap[deal.status] ?? 0
-  const completedSteps = new Set<number>()
-  for (let i = 0; i < currentStep; i++) completedSteps.add(i)
-  setDone(completedSteps)
-  setStep(currentStep)
-}
+
+        if (deal) {
+          const statusStepMap: Record<string, number> = {
+            'outreach_sent': 0,
+            'replied':       1,
+            'negotiating':   3,
+            'contract_out':  5,
+            'signed':        8,
+          }
+          const currentStep = statusStepMap[deal.status] ?? 0
+          const completedSteps = new Set<number>()
+          for (let i = 0; i < currentStep; i++) completedSteps.add(i)
+          setDone(completedSteps)
+          setStep(currentStep)
+
+          // seed fee fields from existing deal row
+          setFees({
+            initial_offer:   deal.initial_offer?.toString()   || '',
+            counter_offer:   deal.counter_offer?.toString()   || '',
+            agreed_fee:      deal.agreed_fee?.toString()      || '',
+          })
+          setTermsEdit({
+            agreed_fee:       deal.agreed_fee?.toString()      || '',
+            deliverables:     deal.deliverables               || '',
+            content_due_date: deal.content_due_date           || '',
+            posting_from:     camp?.posting_from              || '',
+            posting_to:       camp?.posting_to                || '',
+          })
+        }
       }
-      
+
       setLoading(false)
     }
     load()
   }, [params.id, campaignId, router])
+
+  // save a subset of fee fields to campaign_creators on blur
+  async function saveFeeField(field: string, value: string) {
+    if (!dealRow) return
+    const parsed = value ? parseFloat(value) : null
+    await supabase.from('campaign_creators').update({ [field]: parsed }).eq('id', dealRow.id)
+    setDealRow((d: any) => ({ ...d, [field]: parsed }))
+  }
+
+  // save terms fields on blur — some go to campaign_creators, posting dates to campaigns
+  async function saveTermsField(field: string, value: string) {
+    if (!dealRow) return
+    if (field === 'posting_from' || field === 'posting_to') {
+      if (campaignId) {
+        await supabase.from('campaigns').update({ [field]: value || null }).eq('id', campaignId)
+        setCampaign((c: any) => ({ ...c, [field]: value || null }))
+      }
+    } else {
+      const parsed = field === 'agreed_fee' ? (value ? parseFloat(value) : null) : (value || null)
+      await supabase.from('campaign_creators').update({ [field]: parsed }).eq('id', dealRow.id)
+      setDealRow((d: any) => ({ ...d, [field]: parsed }))
+    }
+  }
 
   async function callClaude(prompt: string, maxTokens = 600) {
     const res = await fetch('/api/claude', {
@@ -106,14 +156,8 @@ if (deal) {
     await fetch('/api/send-email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        to: creator.email,
-        subject,
-        body,
-        fromName: campaign?.brand || 'The Agency',
-      }),
+      body: JSON.stringify({ to: creator.email, subject, body, fromName: campaign?.brand || 'The Agency' }),
     })
-    // Update pipeline status to outreach_sent
     if (dealRow) {
       await supabase.from('campaign_creators').update({ status: 'outreach_sent' }).eq('id', dealRow.id)
       setDealRow((d: any) => ({ ...d, status: 'outreach_sent' }))
@@ -123,7 +167,6 @@ if (deal) {
   }
 
   function briefCtx() {
-    const platform = creator?.creator_platforms?.[0]
     if (!campaign) return `Creator: ${creator?.full_name}`
     return `Brand: ${campaign.brand}
 Product: ${campaign.product || 'the product'}
@@ -161,8 +204,23 @@ Start with "Subject: [subject]" then blank line then body. Under 180 words. Refe
 Reply: "${replyText}"`
     const result = await callClaude(prompt, 300)
     const cleaned = result.replace(/```json|```/g, '').trim()
+
+    // try to auto-populate counter_offer from parsed reply
+    try {
+      const parsed = JSON.parse(cleaned)
+      if (parsed.counter_rate) {
+        const num = parseFloat(parsed.counter_rate.replace(/[^0-9.]/g, ''))
+        if (!isNaN(num)) {
+          setFees(f => ({ ...f, counter_offer: num.toString() }))
+          if (dealRow) {
+            await supabase.from('campaign_creators').update({ counter_offer: num }).eq('id', dealRow.id)
+            setDealRow((d: any) => ({ ...d, counter_offer: num }))
+          }
+        }
+      }
+    } catch {}
+
     setAi((p: any) => ({ ...p, reply: cleaned }))
-    // Update status to replied
     if (dealRow) {
       await supabase.from('campaign_creators').update({ status: 'replied' }).eq('id', dealRow.id)
       setDealRow((d: any) => ({ ...d, status: 'replied' }))
@@ -175,7 +233,6 @@ Reply: "${replyText}"`
     const prompt = `Draft a brief ${tone} reply email from ${campaign?.brand || 'the brand'} to ${creator?.full_name}. Accepting their counter-rate and adjusted start date. Campaign: ${campaign?.brand} — ${campaign?.deliverables || 'content deliverables'}. Start with "Subject: [subject]" then blank line then body. Under 120 words. Confirm updated terms. Say contract will follow. Sign off from "${campaign?.brand || 'The Brand'} team".`
     const result = await callClaude(prompt, 300)
     setAi((p: any) => ({ ...p, counter: result }))
-    // Update status to negotiating
     if (dealRow) {
       await supabase.from('campaign_creators').update({ status: 'negotiating' }).eq('id', dealRow.id)
       setDealRow((d: any) => ({ ...d, status: 'negotiating' }))
@@ -187,7 +244,6 @@ Reply: "${replyText}"`
     setAiLoading(true)
     await new Promise(r => setTimeout(r, 1200))
     setAi((p: any) => ({ ...p, contract: true }))
-    // Update status to contract_out
     if (dealRow) {
       await supabase.from('campaign_creators').update({ status: 'contract_out' }).eq('id', dealRow.id)
       setDealRow((d: any) => ({ ...d, status: 'contract_out' }))
@@ -204,10 +260,7 @@ Reply: "${replyText}"`
     if (step === 3 && !ai.counter) { await genCounter(); return }
     if (step === 5 && !ai.contract) { await genContract(); return }
     if (step === 8) {
-      // Mark as signed
-      if (dealRow) {
-        await supabase.from('campaign_creators').update({ status: 'signed' }).eq('id', dealRow.id)
-      }
+      if (dealRow) await supabase.from('campaign_creators').update({ status: 'signed' }).eq('id', dealRow.id)
       router.push(campaignId ? `/campaigns/${campaignId}` : '/campaigns')
       return
     }
@@ -255,7 +308,7 @@ Reply: "${replyText}"`
 
   function contractHtml() {
     const platform = creator?.creator_platforms?.[0]
-    const rate = dealRow?.agreed_fee || dealRow?.negotiation_fee || campaign?.budget || 'agreed rate'
+    const rate = dealRow?.agreed_fee || dealRow?.negotiation_fee || '—'
     return (
       <div style={{ background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '20px 24px', fontSize: '12px', lineHeight: '1.8', color: '#9090a8', fontFamily: 'monospace', marginBottom: '12px' }}>
         <h4 style={{ fontSize: '13px', color: '#e8e8f0', fontWeight: '500', marginBottom: '12px', textAlign: 'center' as const }}>INFLUENCER COLLABORATION AGREEMENT</h4>
@@ -270,17 +323,44 @@ Reply: "${replyText}"`
     )
   }
 
+  // shared input style for inline editable fields
+  const editInp = {
+    background: '#26262e',
+    border: '1px solid rgba(255,255,255,0.07)',
+    borderRadius: '6px',
+    padding: '8px 10px',
+    color: '#e8e8f0',
+    fontSize: '13px',
+    fontWeight: '500' as const,
+    outline: 'none',
+    width: '100%',
+    fontFamily: 'sans-serif',
+    boxSizing: 'border-box' as const,
+  }
+  const editLbl = {
+    fontSize: '10px',
+    color: '#5a5a70',
+    marginBottom: '5px',
+    display: 'block' as const,
+  }
+
   if (loading) return (
     <main style={{ minHeight: '100vh', background: '#0f0f11', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9090a8', fontFamily: 'sans-serif' }}>
       Loading...
     </main>
   )
 
-  const platform     = creator?.creator_platforms?.[0]
-  const s            = STEPS[step]
-  const budget       = campaign?.budget ? `£${Number(campaign.budget).toLocaleString()}` : 'TBC'
-  const win          = campaign?.posting_to ? `${campaign.posting_from} → ${campaign.posting_to}` : campaign?.posting_from || 'TBC'
-  const backUrl      = campaignId ? `/campaigns/${campaignId}` : '/campaigns'
+  const platform = creator?.creator_platforms?.[0]
+  const s        = STEPS[step]
+  const budget   = campaign?.budget ? `£${Number(campaign.budget).toLocaleString()}` : 'TBC'
+  const win      = campaign?.posting_to ? `${campaign.posting_from} → ${campaign.posting_to}` : campaign?.posting_from || 'TBC'
+  const backUrl  = campaignId ? `/campaigns/${campaignId}` : '/campaigns'
+
+  // fee comparison numbers for step 2 right panel
+  const standardRate  = creator?.standard_rate ? Number(creator.standard_rate) : null
+  const initialOffer  = fees.initial_offer  ? parseFloat(fees.initial_offer)  : null
+  const counterOffer  = fees.counter_offer  ? parseFloat(fees.counter_offer)  : null
+  const feeMax        = Math.max(standardRate || 0, initialOffer || 0, counterOffer || 0, 1)
 
   return (
     <main style={{ minHeight: '100vh', background: '#0f0f11', fontFamily: 'sans-serif', display: 'grid', gridTemplateColumns: '220px 1fr' }}>
@@ -292,7 +372,6 @@ Reply: "${replyText}"`
           <a href={backUrl} style={{ fontSize: '11px', color: '#9090a8', textDecoration: 'none' }}>← Back</a>
         </div>
 
-        {/* Creator card */}
         <div style={{ margin: '12px', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '12px' }}>
           <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: 'linear-gradient(135deg,#7c6af7,#3ecf8e)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: '500', color: '#fff', marginBottom: '8px' }}>
             {creator?.full_name?.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2)}
@@ -302,7 +381,7 @@ Reply: "${replyText}"`
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
             {[
               { v: platform?.followers ? Number(platform.followers).toLocaleString() : null, l: 'Followers' },
-              { v: creator?.tier,   l: 'Tier' },
+              { v: creator?.tier, l: 'Tier' },
               { v: Array.isArray(creator?.niche) ? creator.niche[0] : creator?.niche, l: 'Niche' },
               { v: creator?.standard_rate ? `£${Number(creator.standard_rate).toLocaleString()}` : null, l: 'Rate' },
             ].filter(x => x.v).map(x => (
@@ -312,7 +391,6 @@ Reply: "${replyText}"`
               </div>
             ))}
           </div>
-          {/* Deal status */}
           {dealRow?.status && (
             <div style={{ marginTop: '8px', fontSize: '11px', padding: '3px 8px', borderRadius: '20px', background: 'rgba(124,106,247,0.12)', color: '#a898ff', border: '1px solid rgba(124,106,247,0.3)', display: 'inline-block' }}>
               {dealRow.status.replace(/_/g, ' ')}
@@ -320,7 +398,6 @@ Reply: "${replyText}"`
           )}
         </div>
 
-        {/* Campaign brief */}
         {campaign && (
           <div style={{ margin: '0 12px 12px', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '12px' }}>
             <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', fontFamily: 'monospace', marginBottom: '6px' }}>Campaign brief</div>
@@ -339,7 +416,6 @@ Reply: "${replyText}"`
           </div>
         )}
 
-        {/* Steps */}
         <div style={{ padding: '0 8px', flex: 1 }}>
           <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', fontFamily: 'monospace', padding: '8px 8px 4px' }}>Deal pipeline</div>
           {STEPS.map((st, i) => (
@@ -357,12 +433,10 @@ Reply: "${replyText}"`
 
       {/* MAIN */}
       <div style={{ display: 'flex', flexDirection: 'column' }}>
-        {/* Progress bar */}
         <div style={{ height: '2px', background: '#26262e' }}>
           <div style={{ height: '100%', background: '#7c6af7', width: `${((step + 1) / STEPS.length) * 100}%`, transition: 'width 0.4s ease' }} />
         </div>
 
-        {/* Step header */}
         <div style={{ padding: '18px 24px 14px', borderBottom: '1px solid rgba(255,255,255,0.07)', background: '#16161a', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: '10px', color: '#5a5a70', fontFamily: 'monospace', marginBottom: '3px' }}>Step {step + 1} of {STEPS.length}</div>
@@ -378,7 +452,6 @@ Reply: "${replyText}"`
           </div>
         </div>
 
-        {/* Step content */}
         <div style={{ flex: 1, padding: '20px 24px', overflowY: 'auto' }}>
           {aiLoading && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 16px', background: 'rgba(124,106,247,0.12)', border: '1px solid rgba(124,106,247,0.3)', borderRadius: '10px', marginBottom: '14px', fontSize: '12px', color: '#a898ff' }}>
@@ -387,7 +460,7 @@ Reply: "${replyText}"`
             </div>
           )}
 
-          {/* STEP 0 — Outreach email */}
+          {/* STEP 0 */}
           {step === 0 && (
             <div>
               <div style={{ fontSize: '11px', color: '#5a5a70', background: '#1e1e24', borderRadius: '6px', padding: '8px 12px', borderLeft: '2px solid rgba(124,106,247,0.3)', marginBottom: '12px', lineHeight: '1.5' }}>
@@ -406,7 +479,7 @@ Reply: "${replyText}"`
             </div>
           )}
 
-          {/* STEP 1 — Creator reply */}
+          {/* STEP 1 */}
           {step === 1 && (
             <div>
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px', marginBottom: '14px' }}>
@@ -426,49 +499,78 @@ Reply: "${replyText}"`
             </div>
           )}
 
-          {/* STEP 2 — Rate review */}
+          {/* STEP 2 — rate review, fully editable */}
           {step === 2 && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-              <div>
-                <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px', marginBottom: '14px' }}>
-                  <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '10px' }}>Offered vs counter</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                    {[
-                      { l: 'Campaign budget', v: budget,               c: '#e8e8f0' },
-                      { l: 'Initial offer',   v: dealRow?.initial_offer ? `£${Number(dealRow.initial_offer).toLocaleString()}` : '—', c: '#e8e8f0' },
-                      { l: 'Counter offer',   v: dealRow?.counter_offer ? `£${Number(dealRow.counter_offer).toLocaleString()}` : '—', c: '#f5a623' },
-                      { l: 'Exclusivity',     v: `${campaign?.exclusivity_days || 30} days`, c: '#3ecf8e' },
-                    ].map(x => (
-                      <div key={x.l} style={{ background: '#1e1e24', borderRadius: '6px', padding: '8px 10px' }}>
-                        <div style={{ fontSize: '10px', color: '#5a5a70', marginBottom: '3px' }}>{x.l}</div>
-                        <div style={{ fontSize: '13px', fontWeight: '500', color: x.c }}>{x.v}</div>
+
+              {/* Left — editable fee fields */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
+                  <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '14px' }}>Deal fees</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                    {([
+                      { key: 'initial_offer',   label: 'Initial offer (£)' },
+                      { key: 'counter_offer',   label: 'Counter offer (£)' },
+                      { key: 'agreed_fee',      label: 'Agreed fee (£)' },
+                    ] as const).map(f => (
+                      <div key={f.key}>
+                        <label style={editLbl}>{f.label}</label>
+                        <input
+                          style={editInp}
+                          type="number"
+                          min="0"
+                          value={fees[f.key]}
+                          onChange={e => setFees(p => ({ ...p, [f.key]: e.target.value }))}
+                          onBlur={e => saveFeeField(f.key, e.target.value)}
+                          placeholder="0"
+                        />
                       </div>
                     ))}
                   </div>
-                </div>
-                <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
-                  <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '10px' }}>Recommendation</div>
-                  <div style={{ fontSize: '13px', color: '#9090a8', lineHeight: '1.6', marginBottom: '12px' }}>Review the counter offer and approve terms to proceed.</div>
-                  <button onClick={() => setApproved(true)} style={{ padding: '7px 14px', borderRadius: '6px', background: approved ? 'rgba(62,207,142,0.1)' : 'rgba(124,106,247,0.12)', border: `1px solid ${approved ? 'rgba(62,207,142,0.25)' : 'rgba(124,106,247,0.3)'}`, color: approved ? '#3ecf8e' : '#a898ff', fontSize: '12px', cursor: 'pointer', fontFamily: 'sans-serif' }}>
-                    {approved ? '✓ Terms approved' : 'Approve terms'}
-                  </button>
+                  <div style={{ fontSize: '10px', color: '#5a5a70', marginTop: '10px' }}>Fields save automatically on blur</div>
                 </div>
               </div>
+
+              {/* Right — real fee comparison */}
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
-                <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '10px' }}>Rate benchmark</div>
-                <div style={{ fontSize: '11px', color: '#5a5a70', fontFamily: 'monospace', display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                  <span>Low</span><span>Market range</span><span>High</span>
-                </div>
-                <div style={{ height: '6px', background: '#26262e', borderRadius: '3px', position: 'relative', marginBottom: '10px' }}>
-                  <div style={{ position: 'absolute', height: '100%', background: 'rgba(124,106,247,0.12)', border: '1px solid rgba(124,106,247,0.3)', borderRadius: '3px', left: '20%', width: '55%' }} />
-                  <div style={{ position: 'absolute', top: '-3px', width: '12px', height: '12px', borderRadius: '50%', background: '#7c6af7', transform: 'translateX(-50%)', left: '37%' }} />
-                </div>
-                <div style={{ fontSize: '12px', color: '#9090a8', lineHeight: '1.5' }}>Counter-rate is within the typical range for a {creator?.tier || 'micro'} creator in {Array.isArray(creator?.niche) ? creator.niche[0] : creator?.niche || 'this niche'}.</div>
+                <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '16px' }}>Fee comparison</div>
+                {[
+                  { label: "Creator's standard rate", value: standardRate, color: '#9090a8' },
+                  { label: 'Your initial offer',       value: initialOffer,  color: '#a898ff' },
+                  { label: 'Their counter offer',       value: counterOffer,  color: '#f5a623' },
+                ].map(row => (
+                  <div key={row.label} style={{ marginBottom: '14px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}>
+                      <span style={{ fontSize: '11px', color: '#5a5a70' }}>{row.label}</span>
+                      <span style={{ fontSize: '12px', fontWeight: '500', color: row.value ? row.color : '#5a5a70', fontFamily: 'monospace' }}>
+                        {row.value ? `£${Number(row.value).toLocaleString()}` : '—'}
+                      </span>
+                    </div>
+                    <div style={{ height: '5px', background: '#26262e', borderRadius: '3px', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: row.value ? `${Math.round((row.value / feeMax) * 100)}%` : '0%', background: row.color, borderRadius: '3px', transition: 'width 0.4s ease' }} />
+                    </div>
+                  </div>
+                ))}
+                {!standardRate && !initialOffer && !counterOffer && (
+                  <div style={{ fontSize: '11px', color: '#5a5a70', marginTop: '8px' }}>Enter fees on the left to see comparison</div>
+                )}
+                {counterOffer && initialOffer && (
+                  <div style={{ marginTop: '14px', padding: '10px 12px', background: '#1e1e24', borderRadius: '6px', fontSize: '12px', color: '#9090a8' }}>
+                    Counter is <span style={{ color: counterOffer > initialOffer ? '#f5a623' : '#3ecf8e', fontWeight: '500' }}>
+                      {counterOffer > initialOffer
+                        ? `£${(counterOffer - initialOffer).toLocaleString()} above`
+                        : `£${(initialOffer - counterOffer).toLocaleString()} below`}
+                    </span> your initial offer
+                    {standardRate ? ` and ${counterOffer > standardRate
+                      ? `£${(counterOffer - standardRate).toLocaleString()} above`
+                      : `£${(standardRate - counterOffer).toLocaleString()} below`} their standard rate` : ''}.
+                  </div>
+                )}
               </div>
             </div>
           )}
 
-          {/* STEP 3 — Counter offer */}
+          {/* STEP 3 */}
           {step === 3 && (
             <div>
               <div style={{ fontSize: '11px', color: '#5a5a70', background: '#1e1e24', borderRadius: '6px', padding: '8px 12px', borderLeft: '2px solid rgba(124,106,247,0.3)', marginBottom: '12px' }}>
@@ -480,40 +582,72 @@ Reply: "${replyText}"`
             </div>
           )}
 
-          {/* STEP 4 — Terms agreed */}
+          {/* STEP 4 — terms agreed, all editable inline */}
           {step === 4 && (
-            <div>
-              <div style={{ background: 'rgba(62,207,142,0.1)', border: '1px solid rgba(62,207,142,0.25)', borderRadius: '10px', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
-                <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#3ecf8e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', color: '#0f0f11', flexShrink: 0 }}>✓</div>
-                <div>
-                  <div style={{ fontSize: '13px', color: '#3ecf8e', fontWeight: '500' }}>Terms agreed — deal locked</div>
-                  <div style={{ fontSize: '12px', color: '#9090a8', marginTop: '2px' }}>All terms confirmed. Ready to generate contract.</div>
-                </div>
-              </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
-                <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '10px' }}>Locked deal summary</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  {[
-                    { l: 'Creator',      v: creator?.full_name },
-                    { l: 'Brand',        v: campaign?.brand },
-                    { l: 'Agreed fee',   v: dealRow?.agreed_fee ? `£${Number(dealRow.agreed_fee).toLocaleString()}` : budget },
-                    { l: 'Deliverables', v: dealRow?.deliverables || campaign?.deliverables },
-                    { l: 'Window',       v: win },
-                    { l: 'Exclusivity',  v: `${campaign?.exclusivity_days || '30'} days` },
-                    { l: 'Usage rights', v: `${campaign?.usage_months || '6'} months` },
-                    { l: 'Content due',  v: dealRow?.content_due_date || '—' },
-                  ].map(x => (
-                    <div key={x.l} style={{ background: '#1e1e24', borderRadius: '6px', padding: '8px 10px' }}>
-                      <div style={{ fontSize: '10px', color: '#5a5a70', marginBottom: '3px' }}>{x.l}</div>
-                      <div style={{ fontSize: '13px', fontWeight: '500', color: '#3ecf8e' }}>{x.v}</div>
+                <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '14px' }}>Confirm & lock deal terms</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div>
+                    <label style={editLbl}>Agreed fee (£)</label>
+                    <input style={editInp} type="number" min="0" value={termsEdit.agreed_fee}
+                      onChange={e => setTermsEdit(t => ({ ...t, agreed_fee: e.target.value }))}
+                      onBlur={e => saveTermsField('agreed_fee', e.target.value)}
+                      placeholder="Final agreed fee" />
+                  </div>
+                  <div>
+                    <label style={editLbl}>Deliverables</label>
+                    <input style={editInp} value={termsEdit.deliverables}
+                      onChange={e => setTermsEdit(t => ({ ...t, deliverables: e.target.value }))}
+                      onBlur={e => saveTermsField('deliverables', e.target.value)}
+                      placeholder="e.g. 2 Reels + 1 Story" />
+                  </div>
+                  <div>
+                    <label style={editLbl}>Content due date</label>
+                    <input style={editInp} type="date" value={termsEdit.content_due_date}
+                      onChange={e => setTermsEdit(t => ({ ...t, content_due_date: e.target.value }))}
+                      onBlur={e => saveTermsField('content_due_date', e.target.value)} />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div>
+                      <label style={editLbl}>Posting from</label>
+                      <input style={editInp} type="date" value={termsEdit.posting_from}
+                        onChange={e => setTermsEdit(t => ({ ...t, posting_from: e.target.value }))}
+                        onBlur={e => saveTermsField('posting_from', e.target.value)} />
                     </div>
-                  ))}
+                    <div>
+                      <label style={editLbl}>Posting to</label>
+                      <input style={editInp} type="date" value={termsEdit.posting_to}
+                        onChange={e => setTermsEdit(t => ({ ...t, posting_to: e.target.value }))}
+                        onBlur={e => saveTermsField('posting_to', e.target.value)} />
+                    </div>
+                  </div>
+                </div>
+                <div style={{ fontSize: '10px', color: '#5a5a70', marginTop: '10px' }}>Fields save automatically on blur</div>
+              </div>
+
+              <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
+                <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '14px' }}>Fixed terms</div>
+                {[
+                  { l: 'Creator',      v: creator?.full_name },
+                  { l: 'Brand',        v: campaign?.brand },
+                  { l: 'Exclusivity',  v: campaign?.exclusivity_days ? `${campaign.exclusivity_days} days` : '—' },
+                  { l: 'Usage rights', v: campaign?.usage_months ? `${campaign.usage_months} months` : '—' },
+                  { l: 'Platform',     v: platform?.platform },
+                ].map(x => (
+                  <div key={x.l} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', fontSize: '12px' }}>
+                    <span style={{ color: '#5a5a70' }}>{x.l}</span>
+                    <span style={{ color: '#e8e8f0', fontWeight: '500' }}>{x.v || '—'}</span>
+                  </div>
+                ))}
+                <div style={{ marginTop: '14px', padding: '10px 12px', background: 'rgba(62,207,142,0.08)', border: '1px solid rgba(62,207,142,0.2)', borderRadius: '6px', fontSize: '11px', color: '#3ecf8e', lineHeight: '1.5' }}>
+                  Confirming on the left locks these terms into the contract on the next step.
                 </div>
               </div>
             </div>
           )}
 
-          {/* STEP 5 — Contract */}
+          {/* STEP 5 */}
           {step === 5 && (
             <div>
               <div style={{ fontSize: '11px', color: '#5a5a70', background: '#1e1e24', borderRadius: '6px', padding: '8px 12px', borderLeft: '2px solid rgba(124,106,247,0.3)', marginBottom: '12px' }}>
@@ -523,11 +657,12 @@ Reply: "${replyText}"`
             </div>
           )}
 
-          {/* STEP 6 — Review checklist */}
+          {/* STEP 6 */}
           {step === 6 && (() => {
+            const agreedFee = dealRow?.agreed_fee ? `£${Number(dealRow.agreed_fee).toLocaleString()}` : 'TBC'
             const items = [
-              `Fee confirmed: ${dealRow?.agreed_fee ? `£${Number(dealRow.agreed_fee).toLocaleString()}` : budget}`,
-              `Deliverables: ${dealRow?.deliverables || campaign?.deliverables}`,
+              `Fee confirmed: ${agreedFee}`,
+              `Deliverables: ${dealRow?.deliverables || campaign?.deliverables || 'TBC'}`,
               `Posting window: ${win}`,
               `Exclusivity: ${campaign?.exclusivity_days || '30'} days`,
               `Usage rights: ${campaign?.usage_months || '6'} months`,
@@ -559,7 +694,7 @@ Reply: "${replyText}"`
             )
           })()}
 
-          {/* STEP 7 — Sent for signature */}
+          {/* STEP 7 */}
           {step === 7 && (
             <div>
               <div style={{ background: 'rgba(62,207,142,0.1)', border: '1px solid rgba(62,207,142,0.25)', borderRadius: '10px', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
@@ -581,7 +716,7 @@ Reply: "${replyText}"`
             </div>
           )}
 
-          {/* STEP 8 — Signed */}
+          {/* STEP 8 */}
           {step === 8 && (
             <div>
               <div style={{ background: 'rgba(62,207,142,0.1)', border: '1px solid rgba(62,207,142,0.25)', borderRadius: '10px', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
@@ -594,13 +729,7 @@ Reply: "${replyText}"`
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
                 <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
                   <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '10px' }}>Triggered automatically</div>
-                  {[
-                    'Deal status set to Signed',
-                    'Budget committed updated',
-                    'Posting dates added to calendar',
-                    'Creator notified with brief',
-                    `${campaign?.brand || 'Brand'} notified`,
-                  ].map((t, i, arr) => (
+                  {['Deal status set to Signed', 'Budget committed updated', 'Posting dates added to calendar', 'Creator notified with brief', `${campaign?.brand || 'Brand'} notified`].map((t, i, arr) => (
                     <div key={t} style={{ display: 'flex', gap: '10px', padding: '6px 0' }}>
                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                         <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#3ecf8e', flexShrink: 0, marginTop: '3px' }} />
@@ -628,7 +757,7 @@ Reply: "${replyText}"`
           )}
         </div>
 
-        {/* Footer */}
+        {/* FOOTER */}
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center', padding: '14px 24px', borderTop: '1px solid rgba(255,255,255,0.07)', background: '#16161a' }}>
           {step > 0 && (
             <button onClick={() => setStep(s => Math.max(0, s - 1))} style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.07)', background: 'transparent', color: '#9090a8', fontSize: '13px', cursor: 'pointer', fontFamily: 'sans-serif' }}>
@@ -637,21 +766,43 @@ Reply: "${replyText}"`
           )}
           <div style={{ flex: 1 }} />
           {step === 1 && !ai.replyText && <span style={{ fontSize: '11px', color: '#f5a623', fontFamily: 'monospace' }}>Paste the reply first</span>}
-          {step === 2 && !approved && <span style={{ fontSize: '11px', color: '#f5a623', fontFamily: 'monospace' }}>Approve terms first</span>}
           {step === 6 && checked.size < 8 && <span style={{ fontSize: '11px', color: '#f5a623', fontFamily: 'monospace' }}>{checked.size}/8 items reviewed</span>}
-          <button
-            onClick={handleNext}
-            disabled={aiLoading || (step === 1 && !ai.replyText && !ai.reply) || (step === 2 && !approved) || (step === 6 && checked.size < 8)}
-            style={{ padding: '9px 20px', borderRadius: '6px', background: '#7c6af7', color: '#fff', border: 'none', fontSize: '13px', fontWeight: '500', cursor: aiLoading ? 'not-allowed' : 'pointer', opacity: aiLoading || (step === 2 && !approved) || (step === 6 && checked.size < 8) ? 0.5 : 1, fontFamily: 'sans-serif' }}
-          >
-            {step === 0 && !ai.email ? 'Generate email'
-              : step === 0 && ai.email && !emailSent && creator?.email ? 'Send email'
-              : step === 1 && !ai.reply ? 'Classify reply'
-              : step === 3 && !ai.counter ? 'Draft counter-offer'
-              : step === 5 && !ai.contract ? 'Generate contract'
-              : step === 8 ? 'Mark as signed'
-              : 'Next →'}
-          </button>
+          {step === 2 ? (
+  <div style={{ display: 'flex', gap: '8px' }}>
+    <button
+      onClick={() => {
+        setDone(p => new Set([...p, 2, 3]))
+        setStep(4)
+      }}
+      style={{ padding: '9px 20px', borderRadius: '6px', background: 'rgba(62,207,142,0.12)', color: '#3ecf8e', border: '1px solid rgba(62,207,142,0.25)', fontSize: '13px', fontWeight: '500', cursor: 'pointer', fontFamily: 'sans-serif' }}
+    >
+      Terms agreed →
+    </button>
+    <button
+      onClick={() => {
+        setDone(p => new Set([...p, 2]))
+        setStep(3)
+      }}
+      style={{ padding: '9px 20px', borderRadius: '6px', background: '#7c6af7', color: '#fff', border: 'none', fontSize: '13px', fontWeight: '500', cursor: 'pointer', fontFamily: 'sans-serif' }}
+    >
+      Draft counter-offer →
+    </button>
+  </div>
+) : (
+  <button
+    onClick={handleNext}
+    disabled={aiLoading || (step === 1 && !ai.replyText && !ai.reply) || (step === 6 && checked.size < 8)}
+    style={{ padding: '9px 20px', borderRadius: '6px', background: '#7c6af7', color: '#fff', border: 'none', fontSize: '13px', fontWeight: '500', cursor: aiLoading ? 'not-allowed' : 'pointer', opacity: aiLoading || (step === 6 && checked.size < 8) ? 0.5 : 1, fontFamily: 'sans-serif' }}
+  >
+    {step === 0 && !ai.email ? 'Generate email'
+      : step === 0 && ai.email && !emailSent && creator?.email ? 'Send email'
+      : step === 1 && !ai.reply ? 'Classify reply'
+      : step === 3 && !ai.counter ? 'Draft counter-offer'
+      : step === 5 && !ai.contract ? 'Generate contract'
+      : step === 8 ? 'Mark as signed'
+      : 'Next →'}
+  </button>
+)}
         </div>
       </div>
 

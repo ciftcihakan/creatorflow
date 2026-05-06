@@ -28,13 +28,20 @@ export default function CampaignPipeline() {
   const [saving, setSaving]                     = useState(false)
   const [saveMsg, setSaveMsg]                   = useState('')
 
+  // campaign edit state
+  const [editingCampaign, setEditingCampaign] = useState(false)
+  const [editSaving, setEditSaving]           = useState(false)
+  const [editError, setEditError]             = useState('')
+  const [managers, setManagers]               = useState<any[]>([])
+  const [campaignForm, setCampaignForm]       = useState<any>(null)
+
   const [deal, setDeal] = useState({
     status:           '',
     initial_offer:    '',
     counter_offer:    '',
-    negotiation_fee:  '',
     agreed_fee:       '',
     deliverables:     '',
+    quantity:         '',
     content_due_date: '',
     internal_notes:   '',
   })
@@ -64,6 +71,28 @@ export default function CampaignPipeline() {
       if (!camp) { router.push('/campaigns'); return }
       setCampaign(camp)
 
+      // seed edit form
+      setCampaignForm({
+        campaign_name:      camp.campaign_name      ?? '',
+        brand:              camp.brand              ?? '',
+        product:            camp.product            ?? '',
+        platform:           camp.platform           ?? 'Instagram',
+        key_message:        camp.key_message        ?? '',
+        deliverables:       camp.deliverables       ?? '',
+        posting_from:       camp.posting_from       ?? '',
+        posting_to:         camp.posting_to         ?? '',
+        budget:             camp.budget?.toString() ?? '',
+        exclusivity_days:   camp.exclusivity_days?.toString() ?? '',
+        usage_months:       camp.usage_months?.toString()     ?? '',
+        content_guidelines: camp.content_guidelines ?? '',
+        status:             camp.status             ?? 'draft',
+        account_manager_id: camp.account_manager_id ?? '',
+      })
+
+      // load managers for the select
+      const { data: mgrs } = await supabase.from('profiles').select('id, full_name, email')
+      setManagers(mgrs || [])
+
       const { data: cc } = await supabase
         .from('campaign_creators')
         .select(`
@@ -88,9 +117,9 @@ export default function CampaignPipeline() {
       status:           cc.status || 'added',
       initial_offer:    cc.initial_offer?.toString()   || '',
       counter_offer:    cc.counter_offer?.toString()   || '',
-      negotiation_fee:  cc.negotiation_fee?.toString() || '',
       agreed_fee:       cc.agreed_fee?.toString()      || '',
       deliverables:     cc.deliverables                || '',
+      quantity:         cc.quantity?.toString()        || '',
       content_due_date: cc.content_due_date            || '',
       internal_notes:   cc.internal_notes              || '',
     })
@@ -112,9 +141,9 @@ export default function CampaignPipeline() {
         status:           deal.status,
         initial_offer:    deal.initial_offer    ? parseFloat(deal.initial_offer)   : null,
         counter_offer:    deal.counter_offer    ? parseFloat(deal.counter_offer)   : null,
-        negotiation_fee:  deal.negotiation_fee  ? parseFloat(deal.negotiation_fee) : null,
         agreed_fee:       deal.agreed_fee       ? parseFloat(deal.agreed_fee)      : null,
         deliverables:     deal.deliverables     || null,
+        quantity:         deal.quantity         ? parseInt(deal.quantity)          : null,
         content_due_date: deal.content_due_date || null,
         internal_notes:   deal.internal_notes   || null,
       })
@@ -126,8 +155,8 @@ export default function CampaignPipeline() {
       ...selected, ...deal,
       initial_offer:   deal.initial_offer   ? parseFloat(deal.initial_offer)   : null,
       counter_offer:   deal.counter_offer   ? parseFloat(deal.counter_offer)   : null,
-      negotiation_fee: deal.negotiation_fee ? parseFloat(deal.negotiation_fee) : null,
       agreed_fee:      deal.agreed_fee      ? parseFloat(deal.agreed_fee)      : null,
+      quantity:        deal.quantity        ? parseInt(deal.quantity)          : null,
     }
     setCampaignCreators(p => p.map(c => c.id === selected.id ? updated : c))
     setSelected(updated)
@@ -160,12 +189,46 @@ export default function CampaignPipeline() {
     setSaving(false)
   }
 
+  async function saveCampaign() {
+    if (!campaignForm.campaign_name || !campaignForm.brand) {
+      setEditError('Campaign name and brand are required'); return
+    }
+    setEditSaving(true); setEditError('')
+
+    const payload = {
+      campaign_name:      campaignForm.campaign_name,
+      brand:              campaignForm.brand,
+      product:            campaignForm.product            || null,
+      platform:           campaignForm.platform,
+      key_message:        campaignForm.key_message        || null,
+      deliverables:       campaignForm.deliverables       || null,
+      posting_from:       campaignForm.posting_from       || null,
+      posting_to:         campaignForm.posting_to         || null,
+      budget:             campaignForm.budget             ? parseFloat(campaignForm.budget)         : 0,
+      exclusivity_days:   campaignForm.exclusivity_days   ? parseInt(campaignForm.exclusivity_days) : null,
+      usage_months:       campaignForm.usage_months       ? parseInt(campaignForm.usage_months)     : null,
+      content_guidelines: campaignForm.content_guidelines || null,
+      status:             campaignForm.status,
+      account_manager_id: campaignForm.account_manager_id || null,
+    }
+
+    const { error } = await supabase.from('campaigns').update(payload).eq('id', id)
+    if (error) { setEditError(error.message); setEditSaving(false); return }
+
+    setCampaign((prev: any) => ({ ...prev, ...payload }))
+    setEditingCampaign(false)
+    setEditSaving(false)
+  }
+
   const totalBudget = campaign?.budget || 0
   const spent = campaignCreators
     .filter(cc => cc.status === 'signed' && cc.agreed_fee)
     .reduce((sum, cc) => sum + Number(cc.agreed_fee), 0)
   const remaining = totalBudget - spent
   const spentPct = totalBudget > 0 ? Math.min((spent / totalBudget) * 100, 100) : 0
+
+  const signedCreators    = campaignCreators.filter(cc => cc.status === 'signed')
+  const totalDeliverables = signedCreators.reduce((sum, cc) => sum + (cc.quantity || 0), 0)
 
   const stats = [
     { label: 'Total',         val: campaignCreators.length, color: '#e8e8f0' },
@@ -279,80 +342,231 @@ export default function CampaignPipeline() {
         {/* SIDEBAR */}
         {sidebarOpen && (
           <div style={{ width: '300px', flexShrink: 0, background: '#16161a', borderLeft: '1px solid rgba(255,255,255,0.07)', overflowY: 'auto', padding: '20px' }}>
+
+            {/* HEADER */}
             <div style={{ marginBottom: '20px', paddingBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-              <div style={{ fontSize: '15px', fontWeight: '600', color: '#e8e8f0', marginBottom: '4px' }}>{campaign?.campaign_name}</div>
-              <div style={{ fontSize: '12px', color: '#9090a8' }}>{campaign?.brand}{campaign?.product ? ` · ${campaign.product}` : ''}</div>
-              {campaign?.status && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px' }}>
+                <div>
+                  <div style={{ fontSize: '15px', fontWeight: '600', color: '#e8e8f0', marginBottom: '4px' }}>
+                    {campaign?.campaign_name}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#9090a8' }}>
+                    {campaign?.brand}{campaign?.product ? ` · ${campaign.product}` : ''}
+                  </div>
+                </div>
+                <button
+                  onClick={() => { setEditingCampaign(e => !e); setEditError('') }}
+                  title={editingCampaign ? 'Cancel edit' : 'Edit campaign'}
+                  style={{ background: editingCampaign ? 'rgba(124,106,247,0.15)' : 'transparent', border: `1px solid ${editingCampaign ? 'rgba(124,106,247,0.4)' : 'rgba(255,255,255,0.1)'}`, borderRadius: '6px', padding: '4px 8px', cursor: 'pointer', color: editingCampaign ? '#a898ff' : '#5a5a70', fontSize: '13px', flexShrink: 0, lineHeight: 1 }}
+                >
+                  {editingCampaign ? '✕' : '✎'}
+                </button>
+              </div>
+              {campaign?.status && !editingCampaign && (
                 <span style={{ display: 'inline-block', marginTop: '8px', fontSize: '11px', padding: '2px 10px', borderRadius: '20px', background: 'rgba(62,207,142,0.1)', color: '#3ecf8e', border: '1px solid rgba(62,207,142,0.25)' }}>
                   {campaign.status}
                 </span>
               )}
             </div>
 
-            <div style={{ marginBottom: '20px', paddingBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-              <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>Budget</div>
-              {[
-                { k: 'Total',     v: `£${Number(totalBudget).toLocaleString()}`, c: '#e8e8f0' },
-                { k: 'Committed', v: `£${Number(spent).toLocaleString()}`,       c: '#3ecf8e' },
-                { k: 'Remaining', v: `£${Number(remaining).toLocaleString()}`,   c: remaining < 0 ? '#f06060' : '#e8e8f0' },
-              ].map(r => (
-                <div key={r.k} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                  <span style={{ fontSize: '12px', color: '#9090a8' }}>{r.k}</span>
-                  <span style={{ fontSize: '12px', fontWeight: '500', color: r.c }}>{r.v}</span>
-                </div>
-              ))}
-              <div style={{ background: '#26262e', borderRadius: '4px', height: '6px', overflow: 'hidden', marginTop: '4px' }}>
-                <div style={{ height: '100%', width: `${spentPct}%`, background: spentPct > 90 ? '#f06060' : '#3ecf8e', borderRadius: '4px', transition: 'width 0.3s' }} />
-              </div>
-              <div style={{ fontSize: '10px', color: '#5a5a70', marginTop: '4px', textAlign: 'right' }}>{Math.round(spentPct)}% committed</div>
-            </div>
-
-            <div style={{ marginBottom: '20px', paddingBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-              <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>Details</div>
-              {[
-                { k: 'Platform',     v: campaign?.platform },
-                { k: 'Deliverables', v: campaign?.deliverables },
-                { k: 'Live from',    v: campaign?.posting_from },
-                { k: 'Live to',      v: campaign?.posting_to },
-                { k: 'Exclusivity',  v: campaign?.exclusivity_days ? `${campaign.exclusivity_days} days` : null },
-                { k: 'Usage',        v: campaign?.usage_months ? `${campaign.usage_months} months` : null },
-              ].filter(r => r.v).map(row => (
-                <div key={row.k} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: '12px' }}>
-                  <span style={{ color: '#9090a8' }}>{row.k}</span>
-                  <span style={{ color: '#e8e8f0', fontWeight: '500', textAlign: 'right', maxWidth: '160px' }}>{row.v}</span>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ marginBottom: '20px' }}>
-              <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>Account manager</div>
-              {campaign?.profiles ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'rgba(124,106,247,0.2)', border: '1px solid rgba(124,106,247,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: '500', color: '#a898ff', flexShrink: 0 }}>
-                    {campaign.profiles.full_name?.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2)}
+            {/* EDIT FORM */}
+            {editingCampaign ? (
+              <div>
+                <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>Campaign details</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '18px' }}>
+                  <div>
+                    <label style={lbl}>Campaign name *</label>
+                    <input style={inp} value={campaignForm.campaign_name} onChange={e => setCampaignForm((f: any) => ({ ...f, campaign_name: e.target.value }))} placeholder="e.g. Spring Launch 2025" />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div>
+                      <label style={lbl}>Brand *</label>
+                      <input style={inp} value={campaignForm.brand} onChange={e => setCampaignForm((f: any) => ({ ...f, brand: e.target.value }))} placeholder="Brand name" />
+                    </div>
+                    <div>
+                      <label style={lbl}>Product</label>
+                      <input style={inp} value={campaignForm.product} onChange={e => setCampaignForm((f: any) => ({ ...f, product: e.target.value }))} placeholder="Product / service" />
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div>
+                      <label style={lbl}>Platform</label>
+                      <select style={inp} value={campaignForm.platform} onChange={e => setCampaignForm((f: any) => ({ ...f, platform: e.target.value }))}>
+                        {['Instagram','TikTok','YouTube','Instagram + TikTok','Multi-platform'].map(p => <option key={p}>{p}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={lbl}>Status</label>
+                      <select style={inp} value={campaignForm.status} onChange={e => setCampaignForm((f: any) => ({ ...f, status: e.target.value }))}>
+                        <option value="draft">Draft</option>
+                        <option value="active">Active</option>
+                        <option value="paused">Paused</option>
+                        <option value="completed">Completed</option>
+                      </select>
+                    </div>
                   </div>
                   <div>
-                    <div style={{ fontSize: '13px', fontWeight: '500', color: '#e8e8f0' }}>{campaign.profiles.full_name}</div>
-                    {campaign.profiles.email && <div style={{ fontSize: '11px', color: '#9090a8' }}>{campaign.profiles.email}</div>}
+                    <label style={lbl}>Account manager</label>
+                    <select style={inp} value={campaignForm.account_manager_id} onChange={e => setCampaignForm((f: any) => ({ ...f, account_manager_id: e.target.value }))}>
+                      <option value="">— Unassigned —</option>
+                      {managers.map((m: any) => (
+                        <option key={m.id} value={m.id}>{m.full_name}{m.email ? ` (${m.email})` : ''}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={lbl}>Key message</label>
+                    <textarea style={{ ...inp, minHeight: '60px', resize: 'vertical' }} value={campaignForm.key_message} onChange={e => setCampaignForm((f: any) => ({ ...f, key_message: e.target.value }))} placeholder="Core campaign message" />
                   </div>
                 </div>
-              ) : (
-                <div style={{ fontSize: '12px', color: '#5a5a70' }}>No manager assigned</div>
-              )}
-            </div>
 
-            {campaign?.key_message && (
-              <div style={{ marginBottom: '20px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-                <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>Key message</div>
-                <div style={{ fontSize: '12px', color: '#9090a8', lineHeight: '1.5' }}>{campaign.key_message}</div>
-              </div>
-            )}
+                <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Deliverables & timeline</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '18px' }}>
+                  <div>
+                    <label style={lbl}>Deliverables</label>
+                    <input style={inp} value={campaignForm.deliverables} onChange={e => setCampaignForm((f: any) => ({ ...f, deliverables: e.target.value }))} placeholder="e.g. 2 Reels + 3 Stories" />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div>
+                      <label style={lbl}>Posting from</label>
+                      <input style={inp} type="date" value={campaignForm.posting_from} onChange={e => setCampaignForm((f: any) => ({ ...f, posting_from: e.target.value }))} />
+                    </div>
+                    <div>
+                      <label style={lbl}>Posting to</label>
+                      <input style={inp} type="date" value={campaignForm.posting_to} onChange={e => setCampaignForm((f: any) => ({ ...f, posting_to: e.target.value }))} />
+                    </div>
+                  </div>
+                </div>
 
-            {campaign?.content_guidelines && (
-              <div style={{ paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
-                <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>Guidelines</div>
-                <div style={{ fontSize: '12px', color: '#9090a8', lineHeight: '1.5' }}>{campaign.content_guidelines}</div>
+                <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Budget & terms</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '18px' }}>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label style={lbl}>Total budget (£)</label>
+                    <input style={inp} type="number" min="0" value={campaignForm.budget} onChange={e => setCampaignForm((f: any) => ({ ...f, budget: e.target.value }))} placeholder="e.g. 5000" />
+                  </div>
+                  <div>
+                    <label style={lbl}>Exclusivity days</label>
+                    <input style={inp} type="number" min="0" value={campaignForm.exclusivity_days} onChange={e => setCampaignForm((f: any) => ({ ...f, exclusivity_days: e.target.value }))} placeholder="e.g. 30" />
+                  </div>
+                  <div>
+                    <label style={lbl}>Usage months</label>
+                    <input style={inp} type="number" min="0" value={campaignForm.usage_months} onChange={e => setCampaignForm((f: any) => ({ ...f, usage_months: e.target.value }))} placeholder="e.g. 6" />
+                  </div>
+                </div>
+
+                <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>Content guidelines</div>
+                <div style={{ marginBottom: '18px' }}>
+                  <textarea style={{ ...inp, minHeight: '70px', resize: 'vertical' }} value={campaignForm.content_guidelines} onChange={e => setCampaignForm((f: any) => ({ ...f, content_guidelines: e.target.value }))} placeholder="No competitor mentions. Authentic lifestyle feel." />
+                </div>
+
+                {editError && (
+                  <div style={{ background: 'rgba(240,96,96,0.1)', border: '1px solid rgba(240,96,96,0.2)', borderRadius: '6px', padding: '8px 12px', color: '#f06060', fontSize: '12px', marginBottom: '12px' }}>
+                    {editError}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={saveCampaign}
+                    disabled={editSaving}
+                    style={{ flex: 1, background: '#7c6af7', color: '#fff', border: 'none', borderRadius: '6px', padding: '8px 0', fontSize: '12px', fontWeight: '500', cursor: editSaving ? 'not-allowed' : 'pointer', opacity: editSaving ? 0.6 : 1 }}
+                  >
+                    {editSaving ? 'Saving...' : 'Save changes'}
+                  </button>
+                  <button
+                    onClick={() => { setEditingCampaign(false); setEditError('') }}
+                    style={{ background: '#1e1e24', color: '#9090a8', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '8px 12px', fontSize: '12px', cursor: 'pointer' }}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
+
+            ) : (
+              <>
+                {/* BUDGET */}
+                <div style={{ marginBottom: '20px', paddingBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                  <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>Budget</div>
+                  {[
+                    { k: 'Total',     v: `£${Number(totalBudget).toLocaleString()}`, c: '#e8e8f0' },
+                    { k: 'Committed', v: `£${Number(spent).toLocaleString()}`,       c: '#3ecf8e' },
+                    { k: 'Remaining', v: `£${Number(remaining).toLocaleString()}`,   c: remaining < 0 ? '#f06060' : '#e8e8f0' },
+                  ].map(r => (
+                    <div key={r.k} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+                      <span style={{ fontSize: '12px', color: '#9090a8' }}>{r.k}</span>
+                      <span style={{ fontSize: '12px', fontWeight: '500', color: r.c }}>{r.v}</span>
+                    </div>
+                  ))}
+                  <div style={{ background: '#26262e', borderRadius: '4px', height: '6px', overflow: 'hidden', marginTop: '4px' }}>
+                    <div style={{ height: '100%', width: `${spentPct}%`, background: spentPct > 90 ? '#f06060' : '#3ecf8e', borderRadius: '4px', transition: 'width 0.3s' }} />
+                  </div>
+                  <div style={{ fontSize: '10px', color: '#5a5a70', marginTop: '4px', textAlign: 'right' }}>{Math.round(spentPct)}% committed</div>
+
+                  {signedCreators.length > 0 && (
+                    <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                        <span style={{ fontSize: '12px', color: '#9090a8' }}>Deliverables</span>
+                        <span style={{ fontSize: '12px', fontWeight: '500', color: '#e8e8f0' }}>{totalDeliverables}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ fontSize: '12px', color: '#9090a8' }}>Signed creators</span>
+                        <span style={{ fontSize: '12px', fontWeight: '500', color: '#3ecf8e' }}>{signedCreators.length}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* DETAILS */}
+                <div style={{ marginBottom: '20px', paddingBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                  <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>Details</div>
+                  {[
+                    { k: 'Platform',     v: campaign?.platform },
+                    { k: 'Deliverables', v: campaign?.deliverables },
+                    { k: 'Live from',    v: campaign?.posting_from },
+                    { k: 'Live to',      v: campaign?.posting_to },
+                    { k: 'Exclusivity',  v: campaign?.exclusivity_days ? `${campaign.exclusivity_days} days` : null },
+                    { k: 'Usage',        v: campaign?.usage_months ? `${campaign.usage_months} months` : null },
+                  ].filter(r => r.v).map(row => (
+                    <div key={row.k} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: '12px' }}>
+                      <span style={{ color: '#9090a8' }}>{row.k}</span>
+                      <span style={{ color: '#e8e8f0', fontWeight: '500', textAlign: 'right', maxWidth: '160px' }}>{row.v}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* ACCOUNT MANAGER */}
+                <div style={{ marginBottom: '20px' }}>
+                  <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>Account manager</div>
+                  {campaign?.profiles ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: 'rgba(124,106,247,0.2)', border: '1px solid rgba(124,106,247,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: '500', color: '#a898ff', flexShrink: 0 }}>
+                        {campaign.profiles.full_name?.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2)}
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '13px', fontWeight: '500', color: '#e8e8f0' }}>{campaign.profiles.full_name}</div>
+                        {campaign.profiles.email && <div style={{ fontSize: '11px', color: '#9090a8' }}>{campaign.profiles.email}</div>}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '12px', color: '#5a5a70' }}>No manager assigned</div>
+                  )}
+                </div>
+
+                {/* KEY MESSAGE */}
+                {campaign?.key_message && (
+                  <div style={{ marginBottom: '20px', paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                    <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>Key message</div>
+                    <div style={{ fontSize: '12px', color: '#9090a8', lineHeight: '1.5' }}>{campaign.key_message}</div>
+                  </div>
+                )}
+
+                {/* GUIDELINES */}
+                {campaign?.content_guidelines && (
+                  <div style={{ paddingTop: '16px', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                    <div style={{ fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>Guidelines</div>
+                    <div style={{ fontSize: '12px', color: '#9090a8', lineHeight: '1.5' }}>{campaign.content_guidelines}</div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -408,17 +622,19 @@ export default function CampaignPipeline() {
                       <input style={inp} type="number" min="0" value={deal.counter_offer} onChange={e => setDeal(d => ({ ...d, counter_offer: e.target.value }))} placeholder="e.g. 1500" />
                     </div>
                     <div>
-                      <label style={lbl}>Negotiation fee (£)</label>
-                      <input style={inp} type="number" min="0" value={deal.negotiation_fee} onChange={e => setDeal(d => ({ ...d, negotiation_fee: e.target.value }))} placeholder="e.g. 1200" />
-                    </div>
-                    <div>
                       <label style={lbl}>Agreed fee (£)</label>
                       <input style={inp} type="number" min="0" value={deal.agreed_fee} onChange={e => setDeal(d => ({ ...d, agreed_fee: e.target.value }))} placeholder="e.g. 1200" />
                     </div>
                   </div>
-                  <div>
-                    <label style={lbl}>Deliverables</label>
-                    <input style={inp} value={deal.deliverables} onChange={e => setDeal(d => ({ ...d, deliverables: e.target.value }))} placeholder="e.g. 2 Reels + 1 Story" />
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '10px', alignItems: 'end' }}>
+                    <div>
+                      <label style={lbl}>Deliverables</label>
+                      <input style={inp} value={deal.deliverables} onChange={e => setDeal(d => ({ ...d, deliverables: e.target.value }))} placeholder="e.g. 2 Reels + 1 Story" />
+                    </div>
+                    <div style={{ width: '64px' }}>
+                      <label style={lbl}>Qty</label>
+                      <input style={inp} type="number" min="0" value={deal.quantity} onChange={e => setDeal(d => ({ ...d, quantity: e.target.value }))} placeholder="0" />
+                    </div>
                   </div>
                   <div>
                     <label style={lbl}>Content due date</label>
