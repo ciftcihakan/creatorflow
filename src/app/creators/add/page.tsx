@@ -4,9 +4,11 @@ import { useState, useEffect, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 
-const PLATFORMS = ['Instagram', 'TikTok', 'YouTube', 'X', 'LinkedIn', 'Pinterest']
-const TIERS = ['nano', 'micro', 'mid', 'macro', 'mega']
-const STATUSES = [
+const PLATFORMS  = ['Instagram', 'TikTok', 'YouTube', 'X', 'LinkedIn', 'Pinterest']
+const TIERS      = ['nano', 'micro', 'mid', 'macro', 'mega']
+const GENDERS    = ['Mixed', 'Majority female', 'Majority male']
+const AGE_RANGES = ['13-17', '18-24', '25-34', '35-44', '45+', 'Mixed']
+const STATUSES   = [
   { id: 'added',         label: 'Added' },
   { id: 'outreach_sent', label: 'Outreach sent' },
   { id: 'replied',       label: 'Replied' },
@@ -17,7 +19,12 @@ const STATUSES = [
   { id: 'gone_cold',     label: 'Gone cold' },
 ]
 
-type Platform = { platform: string; handle: string; followers: string }
+type Platform = {
+  platform:        string
+  handle:          string
+  followers:       string
+  engagement_rate: string
+}
 
 export default function AddCreator() {
   const [user, setUser]             = useState<any>(null)
@@ -35,18 +42,22 @@ export default function AddCreator() {
   const campaignId                  = searchParams.get('campaign')
 
   const [form, setForm] = useState({
-    first_name:    '',
-    last_name:     '',
-    email:         '',
-    niche:         '',
-    tier:          'micro',
-    standard_rate: '',
-    notes:         '',
-    status:        'added',
+    first_name:       '',
+    last_name:        '',
+    email:            '',
+    niche:            '',
+    tier:             'micro',
+    standard_rate:    '',
+    estimated_rate:   '',
+    audience_gender:  'Mixed',
+    audience_age:     'Mixed',
+    audience_location:'',
+    notes:            '',
+    status:           'added',
   })
 
   const [platforms, setPlatforms] = useState<Platform[]>([
-    { platform: 'Instagram', handle: '', followers: '' }
+    { platform: 'Instagram', handle: '', followers: '', engagement_rate: '' }
   ])
 
   useEffect(() => {
@@ -74,8 +85,9 @@ export default function AddCreator() {
       setSearching(true)
       const { data } = await supabase
         .from('creators')
-        .select('*, creator_platforms(platform, handle, followers)')
+        .select('*, creator_platforms(platform, handle, followers, engagement_rate)')
         .or(`full_name.ilike.%${query}%,first_name.ilike.%${query}%,last_name.ilike.%${query}%`)
+        .is('deleted_at', null)
         .limit(6)
       setResults(data || [])
       setSearching(false)
@@ -105,7 +117,6 @@ export default function AddCreator() {
     })
 
     if (error) { setError(error.message); setLoading(false); return }
-
     setSuccess(`${creator.full_name} added to campaign!`)
     setTimeout(() => router.push(`/campaigns/${campaignId}`), 1000)
   }
@@ -115,7 +126,7 @@ export default function AddCreator() {
   }
 
   function addPlatform() {
-    setPlatforms(p => [...p, { platform: 'TikTok', handle: '', followers: '' }])
+    setPlatforms(p => [...p, { platform: 'TikTok', handle: '', followers: '', engagement_rate: '' }])
   }
 
   function removePlatform(index: number) {
@@ -129,20 +140,34 @@ export default function AddCreator() {
 
     const full_name = `${form.first_name} ${form.last_name}`.trim()
 
+    // Aggregate follower count and engagement from platforms
+    const validPlatforms  = platforms.filter(p => p.handle.trim())
+    const totalFollowers  = validPlatforms.reduce((sum, p) => sum + (parseInt(p.followers.replace(/[^0-9]/g, '')) || 0), 0)
+    const avgEngagement   = validPlatforms.length > 0
+      ? validPlatforms.reduce((sum, p) => sum + (parseFloat(p.engagement_rate) || 0), 0) / validPlatforms.length
+      : null
+
     // 1. Insert creator
     const { data: creator, error: creatorErr } = await supabase
       .from('creators')
       .insert({
-        agency_id:     user.id,
-        first_name:    form.first_name,
-        last_name:     form.last_name || null,
-        full_name:     full_name,
-        email:         form.email || null,
-        niche:         form.niche ? form.niche.split(',').map(n => n.trim()).filter(Boolean) : null,
-        tier:          form.tier,
-        standard_rate: form.standard_rate ? parseFloat(form.standard_rate) : null,
-        notes:         form.notes || null,
-        status:        'active',
+        agency_id:        user.id,
+        first_name:       form.first_name,
+        last_name:        form.last_name        || null,
+        full_name:        full_name,
+        email:            form.email            || null,
+        niche:            form.niche ? form.niche.split(',').map(n => n.trim()).filter(Boolean) : null,
+        tier:             form.tier,
+        standard_rate:    form.standard_rate    ? parseFloat(form.standard_rate)  : null,
+        estimated_rate:   form.estimated_rate   ? parseFloat(form.estimated_rate) : null,
+        follower_count:   totalFollowers        || null,
+        engagement_rate:  avgEngagement,
+        audience_gender:  form.audience_gender  || null,
+        audience_age_range: form.audience_age   || null,
+        audience_location: form.audience_location || null,
+        notes:            form.notes            || null,
+        status:           'active',
+        data_source:      'manual',             // always manual for this form
       })
       .select()
       .single()
@@ -150,19 +175,19 @@ export default function AddCreator() {
     if (creatorErr) { setError(creatorErr.message); setLoading(false); return }
 
     // 2. Insert platforms
-    const validPlatforms = platforms.filter(p => p.handle.trim())
     if (validPlatforms.length > 0) {
       await supabase.from('creator_platforms').insert(
         validPlatforms.map(p => ({
-          creator_id: creator.id,
-          platform:   p.platform,
-          handle:     p.handle,
-          followers:  p.followers ? parseInt(p.followers.replace(/[^0-9]/g, '')) : null,
+          creator_id:      creator.id,
+          platform:        p.platform,
+          handle:          p.handle,
+          followers:       p.followers ? parseInt(p.followers.replace(/[^0-9]/g, '')) : null,
+          engagement_rate: p.engagement_rate ? parseFloat(p.engagement_rate) : null,
         }))
       )
     }
 
-    // 3. Add to campaign if we have one
+    // 3. Add to campaign if present
     if (campaignId) {
       const { error: ccError } = await supabase.from('campaign_creators').insert({
         campaign_id: campaignId,
@@ -178,21 +203,27 @@ export default function AddCreator() {
     }
   }
 
+  // ── Styles ────────────────────────────────────────────────────────────────
   const inp = {
     width: '100%', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)',
     borderRadius: '8px', padding: '9px 12px', color: '#e8e8f0', fontSize: '13px',
     outline: 'none', boxSizing: 'border-box' as const, fontFamily: 'sans-serif',
   }
-  const lbl = { display: 'block' as const, color: '#9090a8', fontSize: '12px', marginBottom: '5px', fontWeight: '500' as const }
-  const grid = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }
+  const lbl = {
+    display: 'block' as const, color: '#9090a8', fontSize: '12px',
+    marginBottom: '5px', fontWeight: '500' as const,
+  }
+  const grid         = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }
   const sectionTitle = {
     fontSize: '11px', color: '#5a5a70', textTransform: 'uppercase' as const,
     letterSpacing: '0.07em', marginBottom: '14px', paddingBottom: '8px',
     borderBottom: '1px solid rgba(255,255,255,0.07)',
   }
+  const hint = { fontSize: '11px', color: '#5a5a70', marginTop: '3px' }
 
   return (
     <main style={{ minHeight: '100vh', background: '#0f0f11', fontFamily: 'sans-serif' }}>
+
       {/* NAV */}
       <div style={{ background: '#16161a', borderBottom: '1px solid rgba(255,255,255,0.07)', padding: '14px 28px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ fontFamily: 'monospace', fontSize: '13px', color: '#a898ff' }}>creatorflow</div>
@@ -214,14 +245,13 @@ export default function AddCreator() {
             ✓ {success}
           </div>
         )}
-
         {error && (
           <div style={{ background: 'rgba(240,96,96,0.1)', border: '1px solid rgba(240,96,96,0.25)', borderRadius: '8px', padding: '10px 14px', color: '#f06060', fontSize: '12px', marginBottom: '16px' }}>
             {error}
           </div>
         )}
 
-        {/* SEARCH */}
+        {/* ── SEARCH ────────────────────────────────────────────────────── */}
         {!showCreate && (
           <div style={{ marginBottom: '24px' }}>
             <div style={sectionTitle}>Search existing creators</div>
@@ -254,7 +284,8 @@ export default function AddCreator() {
                 {results.map((c, i) => {
                   const primary = c.creator_platforms?.[0]
                   return (
-                    <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 14px', background: '#16161a', borderBottom: i < results.length - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none' }}
+                    <div key={c.id}
+                      style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 14px', background: '#16161a', borderBottom: i < results.length - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none' }}
                       onMouseEnter={e => (e.currentTarget.style.background = '#1e1e24')}
                       onMouseLeave={e => (e.currentTarget.style.background = '#16161a')}
                     >
@@ -263,10 +294,11 @@ export default function AddCreator() {
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: '13px', fontWeight: '500', color: '#e8e8f0' }}>{c.full_name}</div>
-                        <div style={{ fontSize: '11px', color: '#5a5a70', display: 'flex', gap: '8px', marginTop: '2px' }}>
+                        <div style={{ fontSize: '11px', color: '#5a5a70', display: 'flex', gap: '8px', marginTop: '2px', flexWrap: 'wrap' }}>
                           {primary?.platform && <span>{primary.platform}</span>}
-                          {primary?.handle && <span>{primary.handle}</span>}
+                          {primary?.handle   && <span>{primary.handle}</span>}
                           {primary?.followers && <span>{Number(primary.followers).toLocaleString()} followers</span>}
+                          {primary?.engagement_rate && <span>{primary.engagement_rate}% eng.</span>}
                           {c.tier && <span style={{ textTransform: 'capitalize' }}>{c.tier}</span>}
                         </div>
                       </div>
@@ -295,7 +327,7 @@ export default function AddCreator() {
           </div>
         )}
 
-        {/* CREATE FORM */}
+        {/* ── CREATE FORM ───────────────────────────────────────────────── */}
         {showCreate && (
           <form onSubmit={handleCreate}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
@@ -305,6 +337,7 @@ export default function AddCreator() {
               </button>
             </div>
 
+            {/* CREATOR DETAILS */}
             <div style={{ marginBottom: '24px' }}>
               <div style={sectionTitle}>Creator details</div>
               <div style={grid}>
@@ -329,6 +362,12 @@ export default function AddCreator() {
                 <div>
                   <label style={lbl}>Standard rate (£)</label>
                   <input style={inp} type="number" min="0" value={form.standard_rate} onChange={e => setForm(f => ({ ...f, standard_rate: e.target.value }))} placeholder="e.g. 1200" />
+                  <p style={hint}>Their typical asking rate</p>
+                </div>
+                <div>
+                  <label style={lbl}>Estimated rate (£)</label>
+                  <input style={inp} type="number" min="0" value={form.estimated_rate} onChange={e => setForm(f => ({ ...f, estimated_rate: e.target.value }))} placeholder="e.g. 900" />
+                  <p style={hint}>What you expect to agree</p>
                 </div>
                 <div style={{ gridColumn: '1 / -1' }}>
                   <label style={lbl}>Niche <span style={{ color: '#5a5a70', fontWeight: 400 }}>(comma separated)</span></label>
@@ -345,7 +384,7 @@ export default function AddCreator() {
             <div style={{ marginBottom: '24px' }}>
               <div style={sectionTitle}>Platforms</div>
               {platforms.map((pl, i) => (
-                <div key={i} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 120px 32px', gap: '8px', marginBottom: '8px', alignItems: 'end' }}>
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '130px 1fr 110px 100px 32px', gap: '8px', marginBottom: '8px', alignItems: 'end' }}>
                   <div>
                     {i === 0 && <label style={lbl}>Platform</label>}
                     <select style={inp} value={pl.platform} onChange={e => updatePlatform(i, 'platform', e.target.value)}>
@@ -358,20 +397,50 @@ export default function AddCreator() {
                   </div>
                   <div>
                     {i === 0 && <label style={lbl}>Followers</label>}
-                    <input style={inp} value={pl.followers} onChange={e => updatePlatform(i, 'followers', e.target.value)} placeholder="e.g. 142000" />
+                    <input style={inp} value={pl.followers} onChange={e => updatePlatform(i, 'followers', e.target.value)} placeholder="142000" />
+                  </div>
+                  <div>
+                    {i === 0 && <label style={lbl}>Eng. rate %</label>}
+                    <input style={inp} type="number" step="0.01" min="0" max="100" value={pl.engagement_rate} onChange={e => updatePlatform(i, 'engagement_rate', e.target.value)} placeholder="3.2" />
                   </div>
                   <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: '1px' }}>
                     {platforms.length > 1 && (
-                      <button type="button" onClick={() => removePlatform(i)} style={{ background: 'none', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', color: '#5a5a70', fontSize: '14px', cursor: 'pointer', width: '32px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <button type="button" onClick={() => removePlatform(i)}
+                        style={{ background: 'none', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', color: '#5a5a70', fontSize: '14px', cursor: 'pointer', width: '32px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         ×
                       </button>
                     )}
                   </div>
                 </div>
               ))}
-              <button type="button" onClick={addPlatform} style={{ background: 'none', border: '1px dashed rgba(255,255,255,0.1)', borderRadius: '6px', color: '#5a5a70', fontSize: '12px', cursor: 'pointer', padding: '7px 14px', marginTop: '4px' }}>
+              <button type="button" onClick={addPlatform}
+                style={{ background: 'none', border: '1px dashed rgba(255,255,255,0.1)', borderRadius: '6px', color: '#5a5a70', fontSize: '12px', cursor: 'pointer', padding: '7px 14px', marginTop: '4px' }}>
                 + Add platform
               </button>
+            </div>
+
+            {/* AUDIENCE */}
+            <div style={{ marginBottom: '24px' }}>
+              <div style={sectionTitle}>Audience <span style={{ color: '#3a3a50', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional)</span></div>
+              <div style={grid}>
+                <div>
+                  <label style={lbl}>Audience gender</label>
+                  <select style={inp} value={form.audience_gender} onChange={e => setForm(f => ({ ...f, audience_gender: e.target.value }))}>
+                    {GENDERS.map(g => <option key={g}>{g}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={lbl}>Audience age range</label>
+                  <select style={inp} value={form.audience_age} onChange={e => setForm(f => ({ ...f, audience_age: e.target.value }))}>
+                    {AGE_RANGES.map(a => <option key={a}>{a}</option>)}
+                  </select>
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <label style={lbl}>Audience location</label>
+                  <input style={inp} value={form.audience_location} onChange={e => setForm(f => ({ ...f, audience_location: e.target.value }))} placeholder="e.g. UK, US, Australia" />
+                  <p style={hint}>Helps AI personalise outreach for brands targeting specific regions</p>
+                </div>
+              </div>
             </div>
 
             {/* PIPELINE STATUS */}
@@ -394,10 +463,12 @@ export default function AddCreator() {
             )}
 
             <div style={{ display: 'flex', gap: '10px' }}>
-              <button type="submit" disabled={loading} style={{ background: '#7c6af7', color: '#fff', border: 'none', borderRadius: '8px', padding: '11px 24px', fontSize: '14px', fontWeight: '500', cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.6 : 1 }}>
+              <button type="submit" disabled={loading}
+                style={{ background: '#7c6af7', color: '#fff', border: 'none', borderRadius: '8px', padding: '11px 24px', fontSize: '14px', fontWeight: '500', cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.6 : 1 }}>
                 {loading ? 'Saving...' : campaignId ? 'Create & add to campaign' : 'Create creator'}
               </button>
-              <button type="button" onClick={() => setShowCreate(false)} style={{ background: 'none', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '8px', padding: '11px 18px', fontSize: '14px', color: '#9090a8', cursor: 'pointer' }}>
+              <button type="button" onClick={() => setShowCreate(false)}
+                style={{ background: 'none', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '8px', padding: '11px 18px', fontSize: '14px', color: '#9090a8', cursor: 'pointer' }}>
                 Cancel
               </button>
             </div>
