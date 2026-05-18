@@ -5,38 +5,40 @@ import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 
 const STEPS = [
-  { title: 'Initial outreach email',   sub: 'AI drafts a personalised email from the campaign brief and creator profile', who: ['AI', 'Agency'], ai: true },
-  { title: 'Creator reply received',   sub: 'AI classifies intent and extracts proposed terms',                          who: ['Creator', 'AI'], ai: true },
-  { title: 'Internal rate review',     sub: 'Review and enter deal fees, approve terms to proceed',                     who: ['Agency', 'AI'], ai: true },
-  { title: 'Counter-offer drafted',    sub: 'AI drafts counter-offer based on approved terms',                          who: ['AI', 'Agency'], ai: true },
-  { title: 'Terms agreed',             sub: 'Both sides confirmed — edit and lock the final deal',                      who: ['Agency', 'Creator'], ai: false },
-  { title: 'Contract generated',       sub: 'AI populates contract from the locked deal summary',                       who: ['AI'], ai: true },
-  { title: 'Internal contract review', sub: 'Agency reviews and approves before sending',                               who: ['Agency'], ai: false },
-  { title: 'Sent for e-signature',     sub: 'Creator receives signing link',                                            who: ['Agency', 'Creator'], ai: false },
-  { title: 'Signed — campaign unlocked', sub: 'Contract signed, campaign setup triggered',                             who: ['AI', 'Agency'], ai: true },
+  { title: 'Initial outreach email',     sub: 'AI drafts a personalised email from the campaign brief and creator profile', who: ['AI', 'Agency'],    ai: true  },
+  { title: 'Creator reply received',     sub: 'AI classifies intent and extracts proposed terms',                          who: ['Creator', 'AI'],   ai: true  },
+  { title: 'Internal rate review',       sub: 'Review and enter deal fees, approve terms to proceed',                     who: ['Agency', 'AI'],    ai: true  },
+  { title: 'Counter-offer drafted',      sub: 'AI drafts counter-offer based on approved terms',                          who: ['AI', 'Agency'],    ai: true  },
+  { title: 'Terms agreed',               sub: 'Both sides confirmed — edit and lock the final deal',                      who: ['Agency', 'Creator'], ai: false },
+  { title: 'Contract generated',         sub: 'AI populates contract from the locked deal summary',                       who: ['AI'],              ai: true  },
+  { title: 'Internal contract review',   sub: 'Agency reviews and approves before sending',                               who: ['Agency'],          ai: false },
+  { title: 'Sent for e-signature',       sub: 'Creator receives signing link',                                            who: ['Agency', 'Creator'], ai: false },
+  { title: 'Signed — campaign unlocked', sub: 'Contract signed, campaign setup triggered',                                who: ['AI', 'Agency'],    ai: true  },
 ]
 
 export default function OutreachFlow() {
-  const [creator, setCreator]       = useState<any>(null)
-  const [campaign, setCampaign]     = useState<any>(null)
-  const [dealRow, setDealRow]       = useState<any>(null)
-  const [step, setStep]             = useState(0)
-  const [done, setDone]             = useState<Set<number>>(new Set())
-  const [ai, setAi]                 = useState<any>({})
-  const [tone, setTone]             = useState('warm')
-  const [checked, setChecked]       = useState<Set<number>>(new Set())
-  const [loading, setLoading]       = useState(true)
-  const [aiLoading, setAiLoading]   = useState(false)
-  const [emailSent, setEmailSent]   = useState(false)
+  const [creator, setCreator]         = useState<any>(null)
+  const [campaign, setCampaign]       = useState<any>(null)
+  const [dealRow, setDealRow]         = useState<any>(null)
+  const [emailThread, setEmailThread] = useState<any>(null)
+  const [agencyId, setAgencyId]       = useState<string | null>(null)
+  const [step, setStep]               = useState(0)
+  const [done, setDone]               = useState<Set<number>>(new Set())
+  const [ai, setAi]                   = useState<any>({})
+  const [tone, setTone]               = useState('warm')
+  const [checked, setChecked]         = useState<Set<number>>(new Set())
+  const [loading, setLoading]         = useState(true)
+  const [aiLoading, setAiLoading]     = useState(false)
+  const [emailSent, setEmailSent]     = useState(false)
+  const [polling, setPolling]         = useState(false)
+  const [pollMessage, setPollMessage] = useState('')
 
-  // inline edit state for step 2
   const [fees, setFees] = useState({
-    initial_offer:   '',
-    counter_offer:   '',
-    agreed_fee:      '',
+    initial_offer: '',
+    counter_offer: '',
+    agreed_fee:    '',
   })
 
-  // inline edit state for step 4
   const [termsEdit, setTermsEdit] = useState({
     agreed_fee:       '',
     deliverables:     '',
@@ -55,6 +57,14 @@ export default function OutreachFlow() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { router.push('/auth/login'); return }
 
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('agency_id')
+        .eq('id', user.id)
+        .single()
+      const aid = profile?.agency_id || user.id
+      setAgencyId(aid)
+
       const { data: cr } = await supabase
         .from('creators')
         .select('*, creator_platforms(platform, handle, followers)')
@@ -65,15 +75,11 @@ export default function OutreachFlow() {
 
       if (campaignId) {
         const { data: camp } = await supabase
-          .from('campaigns')
-          .select('*')
-          .eq('id', campaignId)
-          .single()
+          .from('campaigns').select('*').eq('id', campaignId).single()
         setCampaign(camp)
 
         const { data: deal } = await supabase
-          .from('campaign_creators')
-          .select('*')
+          .from('campaign_creators').select('*')
           .eq('campaign_id', campaignId)
           .eq('creator_id', params.id as string)
           .single()
@@ -81,40 +87,47 @@ export default function OutreachFlow() {
 
         if (deal) {
           const statusStepMap: Record<string, number> = {
-            'outreach_sent': 0,
-            'replied':       1,
-            'negotiating':   3,
-            'contract_out':  5,
-            'signed':        8,
+            'outreach_sent': 0, 'replied': 1, 'negotiating': 3,
+            'contract_out':  5, 'signed':  8,
           }
-          const currentStep = statusStepMap[deal.status] ?? 0
+          const currentStep    = statusStepMap[deal.status] ?? 0
           const completedSteps = new Set<number>()
           for (let i = 0; i < currentStep; i++) completedSteps.add(i)
           setDone(completedSteps)
           setStep(currentStep)
-
-          // seed fee fields from existing deal row
           setFees({
-            initial_offer:   deal.initial_offer?.toString()   || '',
-            counter_offer:   deal.counter_offer?.toString()   || '',
-            agreed_fee:      deal.agreed_fee?.toString()      || '',
+            initial_offer: deal.initial_offer?.toString() || '',
+            counter_offer: deal.counter_offer?.toString() || '',
+            agreed_fee:    deal.agreed_fee?.toString()    || '',
           })
           setTermsEdit({
-            agreed_fee:       deal.agreed_fee?.toString()      || '',
-            deliverables:     deal.deliverables               || '',
-            content_due_date: deal.content_due_date           || '',
-            posting_from:     camp?.posting_from              || '',
-            posting_to:       camp?.posting_to                || '',
+            agreed_fee:       deal.agreed_fee?.toString() || '',
+            deliverables:     deal.deliverables           || '',
+            content_due_date: deal.content_due_date       || '',
+            posting_from:     camp?.posting_from          || '',
+            posting_to:       camp?.posting_to            || '',
           })
+
+          const { data: thread } = await supabase
+            .from('email_threads').select('*')
+            .eq('campaign_id', campaignId)
+            .eq('creator_id', params.id as string)
+            .order('created_at', { ascending: false })
+            .limit(1).single()
+
+          if (thread) {
+            setEmailThread(thread)
+            if (thread.last_reply_body) {
+              setAi((p: any) => ({ ...p, replyText: thread.last_reply_body }))
+            }
+          }
         }
       }
-
       setLoading(false)
     }
     load()
   }, [params.id, campaignId, router])
 
-  // save a subset of fee fields to campaign_creators on blur
   async function saveFeeField(field: string, value: string) {
     if (!dealRow) return
     const parsed = value ? parseFloat(value) : null
@@ -122,7 +135,6 @@ export default function OutreachFlow() {
     setDealRow((d: any) => ({ ...d, [field]: parsed }))
   }
 
-  // save terms fields on blur — some go to campaign_creators, posting dates to campaigns
   async function saveTermsField(field: string, value: string) {
     if (!dealRow) return
     if (field === 'posting_from' || field === 'posting_to') {
@@ -138,9 +150,8 @@ export default function OutreachFlow() {
   }
 
   async function callClaude(prompt: string, maxTokens = 600) {
-    const res = await fetch('/api/claude', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const res  = await fetch('/api/claude', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt, maxTokens }),
     })
     const data = await res.json()
@@ -150,20 +161,62 @@ export default function OutreachFlow() {
   async function sendEmail() {
     if (!creator?.email) return
     setAiLoading(true)
-    const lines = (ai.email || '').split('\n')
+    const lines   = (ai.email || '').split('\n')
     const subject = lines[0].replace('Subject:', '').trim()
-    const body = lines.slice(1).join('\n').trim()
-    await fetch('/api/send-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to: creator.email, subject, body, fromName: campaign?.brand || 'The Agency' }),
+    const body    = lines.slice(1).join('\n').trim()
+    const res     = await fetch('/api/send-email', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: creator.email, subject, body,
+        fromName:    campaign?.brand || 'The Agency',
+        agency_id:   agencyId,
+        campaign_id: campaignId,
+        creator_id:  params.id,
+      }),
     })
+    const data = await res.json()
+    if (data.gmail_thread_id) {
+      const { data: thread } = await supabase
+        .from('email_threads').select('*')
+        .eq('campaign_id', campaignId)
+        .eq('creator_id', params.id as string)
+        .single()
+      if (thread) setEmailThread(thread)
+    }
     if (dealRow) {
       await supabase.from('campaign_creators').update({ status: 'outreach_sent' }).eq('id', dealRow.id)
       setDealRow((d: any) => ({ ...d, status: 'outreach_sent' }))
     }
     setEmailSent(true)
     setAiLoading(false)
+  }
+
+  async function pollForReply() {
+    if (!agencyId) return
+    setPolling(true)
+    setPollMessage('Checking Gmail for replies...')
+    const res  = await fetch('/api/gmail/poll', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agency_id: agencyId }),
+    })
+    const data = await res.json()
+    if (data.replies_found > 0) {
+      const { data: thread } = await supabase
+        .from('email_threads').select('*')
+        .eq('campaign_id', campaignId)
+        .eq('creator_id', params.id as string)
+        .order('created_at', { ascending: false })
+        .limit(1).single()
+      if (thread?.last_reply_body) {
+        setEmailThread(thread)
+        setAi((p: any) => ({ ...p, replyText: thread.last_reply_body }))
+        setPollMessage('✓ Reply detected and loaded automatically')
+      }
+    } else {
+      setPollMessage('No new replies found yet — try again in a few minutes')
+    }
+    setPolling(false)
+    setTimeout(() => setPollMessage(''), 4000)
   }
 
   function briefCtx() {
@@ -180,13 +233,13 @@ Content guidelines: ${campaign.content_guidelines || 'none'}`
 
   async function genEmail() {
     setAiLoading(true)
-    const platform = creator?.creator_platforms?.[0]
+    const platform  = creator?.creator_platforms?.[0]
     const toneLabel = tone === 'warm' ? 'warm and professional' : tone === 'casual' ? 'casual and direct' : 'formal'
-    const prompt = `Draft an influencer outreach email on behalf of ${campaign?.brand || 'the brand'}. Tone: ${toneLabel}.
+    const prompt    = `Draft an influencer outreach email on behalf of ${campaign?.brand || 'the brand'}. Tone: ${toneLabel}.
 
 ${briefCtx()}
 
-Creator: ${creator?.full_name} (${platform?.handle || creator?.handle || 'their handle'}) on ${platform?.platform || 'social media'} with ${platform?.followers ? Number(platform.followers).toLocaleString() : 'many'} followers in the ${Array.isArray(creator?.niche) ? creator.niche.join(', ') : creator?.niche || 'lifestyle'} niche. Tier: ${creator?.tier || 'micro'}.
+Creator: ${creator?.full_name} (${platform?.handle || 'their handle'}) on ${platform?.platform || 'social media'} with ${platform?.followers ? Number(platform.followers).toLocaleString() : 'many'} followers in the ${Array.isArray(creator?.niche) ? creator.niche.join(', ') : creator?.niche || 'lifestyle'} niche. Tier: ${creator?.tier || 'micro'}.
 
 Start with "Subject: [subject]" then blank line then body. Under 180 words. Reference something specific about the creator's niche. State the ask clearly. End with a clear next step. Sign off from "${campaign?.brand || 'The Brand'} team".`
     const result = await callClaude(prompt, 400)
@@ -202,10 +255,8 @@ Start with "Subject: [subject]" then blank line then body. Under 180 words. Refe
     const prompt = `Analyse this influencer reply. Return ONLY valid JSON with no markdown, no backticks, no explanation: intent (Interested/Negotiating/Declining/Questions only), summary (one sentence), counter_rate (string or null), counter_date (string or null), exclusivity (string), risk (Low/Medium/High).
 
 Reply: "${replyText}"`
-    const result = await callClaude(prompt, 300)
+    const result  = await callClaude(prompt, 300)
     const cleaned = result.replace(/```json|```/g, '').trim()
-
-    // try to auto-populate counter_offer from parsed reply
     try {
       const parsed = JSON.parse(cleaned)
       if (parsed.counter_rate) {
@@ -219,7 +270,6 @@ Reply: "${replyText}"`
         }
       }
     } catch {}
-
     setAi((p: any) => ({ ...p, reply: cleaned }))
     if (dealRow) {
       await supabase.from('campaign_creators').update({ status: 'replied' }).eq('id', dealRow.id)
@@ -230,13 +280,86 @@ Reply: "${replyText}"`
 
   async function genCounter() {
     setAiLoading(true)
-    const prompt = `Draft a brief ${tone} reply email from ${campaign?.brand || 'the brand'} to ${creator?.full_name}. Accepting their counter-rate and adjusted start date. Campaign: ${campaign?.brand} — ${campaign?.deliverables || 'content deliverables'}. Start with "Subject: [subject]" then blank line then body. Under 120 words. Confirm updated terms. Say contract will follow. Sign off from "${campaign?.brand || 'The Brand'} team".`
-    const result = await callClaude(prompt, 300)
-    setAi((p: any) => ({ ...p, counter: result }))
+
+    const initial = fees.initial_offer ? parseFloat(fees.initial_offer) : null
+    const counter = fees.counter_offer ? parseFloat(fees.counter_offer) : null
+    const agreed  = fees.agreed_fee    ? parseFloat(fees.agreed_fee)    : null
+
+    // Decide strategy based on fee gap
+    let strategy    = 'accept'
+    let proposeRate = counter || initial
+
+    if (initial && counter) {
+      const gap = ((counter - initial) / initial) * 100
+      if (gap <= 20) {
+        strategy    = 'accept'
+        proposeRate = counter
+      } else if (gap <= 40) {
+        strategy    = 'compromise'
+        proposeRate = Math.round((initial + counter) / 2)
+      } else {
+        strategy    = 'hold'
+        proposeRate = Math.round(initial * 1.1)
+      }
+    }
+
+    // Extract date request from reply analysis
+    let dateRequest = ''
+    try {
+      const parsed = JSON.parse((ai.reply || '').replace(/```json|```/g, '').trim())
+      dateRequest  = parsed.counter_date || ''
+    } catch {}
+
+    const strategyInstructions: Record<string, string> = {
+      accept:     `Accept their proposed rate of £${proposeRate?.toLocaleString()} in full. Be warm and enthusiastic. Confirm all terms and say contract will follow shortly.`,
+      compromise: `Their rate of £${counter?.toLocaleString()} is above our initial offer of £${initial?.toLocaleString()}. Propose a compromise rate of £${proposeRate?.toLocaleString()} — meet in the middle. Acknowledge their value, explain the budget constraint briefly, keep it positive.`,
+      hold:       `Their rate of £${counter?.toLocaleString()} is significantly above our budget. Politely hold closer to our original offer, suggest £${proposeRate?.toLocaleString()} as our best rate. Highlight the campaign value — brand exposure, usage rights, long-term relationship potential.`,
+    }
+
+    const prompt = `Draft a professional counter-offer email from ${campaign?.brand || 'the brand'} to ${creator?.full_name}.
+
+Strategy: ${strategyInstructions[strategy]}
+
+Campaign details:
+- Brand: ${campaign?.brand}
+- Deliverables: ${campaign?.deliverables || 'TBC'}
+- Posting window: ${campaign?.posting_from || 'TBC'} to ${campaign?.posting_to || 'TBC'}
+- Exclusivity: ${campaign?.exclusivity_days || 30} days
+- Usage rights: ${campaign?.usage_months || 6} months
+${dateRequest ? `- Their requested start date: ${dateRequest}` : ''}
+${agreed ? `- Agreed fee already set: £${agreed.toLocaleString()}` : ''}
+
+Tone: ${tone === 'warm' ? 'warm and professional' : tone === 'casual' ? 'casual and direct' : 'formal'}
+
+Start with "Subject: [subject]" then blank line then body. Under 150 words. Be specific about the proposed rate. Confirm deliverables. End with a clear next step. Sign off from "${campaign?.brand || 'The Brand'} team".`
+
+    const result = await callClaude(prompt, 400)
+    setAi((p: any) => ({ ...p, counter: result, counterStrategy: strategy, counterRate: proposeRate }))
+
     if (dealRow) {
       await supabase.from('campaign_creators').update({ status: 'negotiating' }).eq('id', dealRow.id)
       setDealRow((d: any) => ({ ...d, status: 'negotiating' }))
     }
+    setAiLoading(false)
+  }
+
+  async function sendCounter() {
+    if (!creator?.email || !ai.counter) return
+    setAiLoading(true)
+    const lines   = (ai.counter || '').split('\n')
+    const subject = lines[0].replace('Subject:', '').trim()
+    const body    = lines.slice(1).join('\n').trim()
+    await fetch('/api/send-email', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: creator.email, subject, body,
+        fromName:    campaign?.brand || 'The Agency',
+        agency_id:   agencyId,
+        campaign_id: campaignId,
+        creator_id:  params.id,
+      }),
+    })
+    setAi((p: any) => ({ ...p, counterSent: true }))
     setAiLoading(false)
   }
 
@@ -268,23 +391,17 @@ Reply: "${replyText}"`
     setStep(s => Math.min(s + 1, STEPS.length - 1))
   }
 
-  function emailDraft(content: string) {
+  function emailDraft(content: string, editable = true) {
     const lines = content.split('\n')
-    const subj = lines[0].replace('Subject:', '').trim()
-    const body = lines.slice(1).join('\n').trim()
+    const subj  = lines[0].replace('Subject:', '').trim()
+    const body  = lines.slice(1).join('\n').trim()
     return (
       <div>
         <div style={{ background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '10px 14px', marginBottom: '10px', display: 'flex', gap: '8px', alignItems: 'center' }}>
           <span style={{ color: '#5a5a70', fontSize: '11px', fontFamily: 'monospace', flexShrink: 0 }}>Subject</span>
-          <input defaultValue={subj} style={{ background: 'transparent', border: 'none', color: '#e8e8f0', fontSize: '13px', fontWeight: '500', outline: 'none', width: '100%', fontFamily: 'sans-serif' }} />
+          <input defaultValue={subj} readOnly={!editable} style={{ background: 'transparent', border: 'none', color: '#e8e8f0', fontSize: '13px', fontWeight: '500', outline: 'none', width: '100%', fontFamily: 'sans-serif' }} />
         </div>
-        <textarea defaultValue={body} style={{ width: '100%', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '14px', fontSize: '13px', color: '#e8e8f0', fontFamily: 'sans-serif', lineHeight: '1.7', resize: 'vertical', minHeight: '180px', outline: 'none', boxSizing: 'border-box' as const }} />
-        <div style={{ display: 'flex', gap: '8px', marginTop: '10px', alignItems: 'center' }}>
-          <button onClick={() => { setAi((p: any) => ({ ...p, email: null })); setEmailSent(false); genEmail() }} style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.07)', background: 'transparent', color: '#9090a8', fontSize: '12px', cursor: 'pointer' }}>Regenerate</button>
-          {creator?.email && !emailSent && <span style={{ fontSize: '11px', color: '#5a5a70' }}>Will send to {creator.email}</span>}
-          {emailSent && <span style={{ fontSize: '11px', color: '#3ecf8e' }}>✓ Sent to {creator.email}</span>}
-          {!creator?.email && <span style={{ fontSize: '11px', color: '#f5a623' }}>No email — add one to the creator profile to send</span>}
-        </div>
+        <textarea defaultValue={body} readOnly={!editable} style={{ width: '100%', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '14px', fontSize: '13px', color: '#e8e8f0', fontFamily: 'sans-serif', lineHeight: '1.7', resize: 'vertical', minHeight: '180px', outline: 'none', boxSizing: 'border-box' as const }} />
       </div>
     )
   }
@@ -308,7 +425,7 @@ Reply: "${replyText}"`
 
   function contractHtml() {
     const platform = creator?.creator_platforms?.[0]
-    const rate = dealRow?.agreed_fee || dealRow?.negotiation_fee || '—'
+    const rate     = dealRow?.agreed_fee || dealRow?.negotiation_fee || '—'
     return (
       <div style={{ background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '20px 24px', fontSize: '12px', lineHeight: '1.8', color: '#9090a8', fontFamily: 'monospace', marginBottom: '12px' }}>
         <h4 style={{ fontSize: '13px', color: '#e8e8f0', fontWeight: '500', marginBottom: '12px', textAlign: 'center' as const }}>INFLUENCER COLLABORATION AGREEMENT</h4>
@@ -323,44 +440,22 @@ Reply: "${replyText}"`
     )
   }
 
-  // shared input style for inline editable fields
-  const editInp = {
-    background: '#26262e',
-    border: '1px solid rgba(255,255,255,0.07)',
-    borderRadius: '6px',
-    padding: '8px 10px',
-    color: '#e8e8f0',
-    fontSize: '13px',
-    fontWeight: '500' as const,
-    outline: 'none',
-    width: '100%',
-    fontFamily: 'sans-serif',
-    boxSizing: 'border-box' as const,
-  }
-  const editLbl = {
-    fontSize: '10px',
-    color: '#5a5a70',
-    marginBottom: '5px',
-    display: 'block' as const,
-  }
+  const editInp = { background: '#26262e', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '8px 10px', color: '#e8e8f0', fontSize: '13px', fontWeight: '500' as const, outline: 'none', width: '100%', fontFamily: 'sans-serif', boxSizing: 'border-box' as const }
+  const editLbl = { fontSize: '10px', color: '#5a5a70', marginBottom: '5px', display: 'block' as const }
 
   if (loading) return (
-    <main style={{ minHeight: '100vh', background: '#0f0f11', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9090a8', fontFamily: 'sans-serif' }}>
-      Loading...
-    </main>
+    <main style={{ minHeight: '100vh', background: '#0f0f11', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9090a8', fontFamily: 'sans-serif' }}>Loading...</main>
   )
 
-  const platform = creator?.creator_platforms?.[0]
-  const s        = STEPS[step]
-  const budget   = campaign?.budget ? `£${Number(campaign.budget).toLocaleString()}` : 'TBC'
-  const win      = campaign?.posting_to ? `${campaign.posting_from} → ${campaign.posting_to}` : campaign?.posting_from || 'TBC'
-  const backUrl  = campaignId ? `/campaigns/${campaignId}` : '/campaigns'
-
-  // fee comparison numbers for step 2 right panel
-  const standardRate  = creator?.standard_rate ? Number(creator.standard_rate) : null
-  const initialOffer  = fees.initial_offer  ? parseFloat(fees.initial_offer)  : null
-  const counterOffer  = fees.counter_offer  ? parseFloat(fees.counter_offer)  : null
-  const feeMax        = Math.max(standardRate || 0, initialOffer || 0, counterOffer || 0, 1)
+  const platform     = creator?.creator_platforms?.[0]
+  const s            = STEPS[step]
+  const budget       = campaign?.budget ? `£${Number(campaign.budget).toLocaleString()}` : 'TBC'
+  const win          = campaign?.posting_to ? `${campaign.posting_from} → ${campaign.posting_to}` : campaign?.posting_from || 'TBC'
+  const backUrl      = campaignId ? `/campaigns/${campaignId}` : '/campaigns'
+  const standardRate = creator?.standard_rate ? Number(creator.standard_rate) : null
+  const initialOffer = fees.initial_offer ? parseFloat(fees.initial_offer) : null
+  const counterOffer = fees.counter_offer ? parseFloat(fees.counter_offer) : null
+  const feeMax       = Math.max(standardRate || 0, initialOffer || 0, counterOffer || 0, 1)
 
   return (
     <main style={{ minHeight: '100vh', background: '#0f0f11', fontFamily: 'sans-serif', display: 'grid', gridTemplateColumns: '220px 1fr' }}>
@@ -474,7 +569,17 @@ Reply: "${replyText}"`
                 ))}
               </div>
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
-                {ai.email ? emailDraft(ai.email) : <div style={{ textAlign: 'center' as const, padding: '36px', color: '#5a5a70', fontSize: '13px' }}>Click "Generate email" to draft with AI</div>}
+                {ai.email ? (
+                  <div>
+                    {emailDraft(ai.email)}
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '10px', alignItems: 'center' }}>
+                      <button onClick={() => { setAi((p: any) => ({ ...p, email: null })); setEmailSent(false); genEmail() }} style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.07)', background: 'transparent', color: '#9090a8', fontSize: '12px', cursor: 'pointer' }}>Regenerate</button>
+                      {creator?.email && !emailSent && <span style={{ fontSize: '11px', color: '#5a5a70' }}>Will send to {creator.email}</span>}
+                      {emailSent && <span style={{ fontSize: '11px', color: '#3ecf8e' }}>✓ Sent to {creator.email}</span>}
+                      {!creator?.email && <span style={{ fontSize: '11px', color: '#f5a623' }}>No email — add one to the creator profile to send</span>}
+                    </div>
+                  </div>
+                ) : <div style={{ textAlign: 'center' as const, padding: '36px', color: '#5a5a70', fontSize: '13px' }}>Click "Generate email" to draft with AI</div>}
               </div>
             </div>
           )}
@@ -482,62 +587,66 @@ Reply: "${replyText}"`
           {/* STEP 1 */}
           {step === 1 && (
             <div>
+              <div style={{ background: emailThread ? 'rgba(62,207,142,0.08)' : '#1e1e24', border: `1px solid ${emailThread ? 'rgba(62,207,142,0.2)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '8px', padding: '10px 14px', marginBottom: '14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: emailThread ? '#3ecf8e' : '#5a5a70' }} />
+                  <span style={{ fontSize: '12px', color: emailThread ? '#3ecf8e' : '#9090a8' }}>
+                    {emailThread ? (emailThread.last_reply_body ? `Reply detected from ${creator?.full_name}` : 'Tracking Gmail thread — waiting for reply') : 'No Gmail thread — send email first to enable auto-detection'}
+                  </span>
+                </div>
+                {emailThread && !emailThread.last_reply_body && (
+                  <button onClick={pollForReply} disabled={polling} style={{ background: 'rgba(124,106,247,0.12)', color: '#a898ff', border: '1px solid rgba(124,106,247,0.3)', borderRadius: '6px', padding: '5px 12px', fontSize: '11px', cursor: polling ? 'not-allowed' : 'pointer', opacity: polling ? 0.6 : 1 }}>
+                    {polling ? 'Checking...' : 'Check for reply'}
+                  </button>
+                )}
+              </div>
+              {pollMessage && (
+                <div style={{ fontSize: '12px', color: pollMessage.startsWith('✓') ? '#3ecf8e' : '#f5a623', marginBottom: '12px', padding: '8px 12px', background: '#1e1e24', borderRadius: '6px' }}>{pollMessage}</div>
+              )}
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px', marginBottom: '14px' }}>
-                <div style={{ fontSize: '11px', color: '#5a5a70', fontFamily: 'monospace', marginBottom: '8px' }}>Paste {creator?.full_name}'s reply below</div>
-                <textarea
-                  value={ai.replyText || ''}
-                  onChange={e => setAi((p: any) => ({ ...p, replyText: e.target.value, reply: null }))}
-                  placeholder={`Paste ${creator?.full_name}'s reply here...`}
-                  style={{ width: '100%', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '12px 14px', fontSize: '13px', color: '#e8e8f0', fontFamily: 'sans-serif', lineHeight: '1.7', resize: 'vertical', minHeight: '160px', outline: 'none', boxSizing: 'border-box' as const }}
-                />
+                <div style={{ fontSize: '11px', color: '#5a5a70', fontFamily: 'monospace', marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>{ai.replyText ? `Reply from ${creator?.full_name}` : `Paste ${creator?.full_name}'s reply below`}</span>
+                  {ai.replyText && emailThread?.last_reply_body && <span style={{ color: '#3ecf8e', fontSize: '10px' }}>✓ Auto-loaded from Gmail</span>}
+                </div>
+                <textarea value={ai.replyText || ''} onChange={e => setAi((p: any) => ({ ...p, replyText: e.target.value, reply: null }))}
+                  placeholder={`Paste ${creator?.full_name}'s reply here or use "Check for reply" above...`}
+                  style={{ width: '100%', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '12px 14px', fontSize: '13px', color: '#e8e8f0', fontFamily: 'sans-serif', lineHeight: '1.7', resize: 'vertical', minHeight: '160px', outline: 'none', boxSizing: 'border-box' as const }} />
               </div>
               {ai.reply ? classifyResult(ai.reply) : (
                 <div style={{ fontSize: '11px', color: '#5a5a70', background: '#1e1e24', borderRadius: '6px', padding: '8px 12px', borderLeft: '2px solid rgba(124,106,247,0.3)', lineHeight: '1.5' }}>
-                  Paste the reply above then click "Classify reply" — Claude will extract their intent, rate counter, and any date requests.
+                  {ai.replyText ? 'Reply loaded — click "Classify reply" to analyse with AI' : 'Use "Check for reply" to auto-load from Gmail, or paste manually below'}
                 </div>
               )}
             </div>
           )}
 
-          {/* STEP 2 — rate review, fully editable */}
+          {/* STEP 2 */}
           {step === 2 && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-
-              {/* Left — editable fee fields */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
-                  <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '14px' }}>Deal fees</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                    {([
-                      { key: 'initial_offer',   label: 'Initial offer (£)' },
-                      { key: 'counter_offer',   label: 'Counter offer (£)' },
-                      { key: 'agreed_fee',      label: 'Agreed fee (£)' },
-                    ] as const).map(f => (
-                      <div key={f.key}>
-                        <label style={editLbl}>{f.label}</label>
-                        <input
-                          style={editInp}
-                          type="number"
-                          min="0"
-                          value={fees[f.key]}
-                          onChange={e => setFees(p => ({ ...p, [f.key]: e.target.value }))}
-                          onBlur={e => saveFeeField(f.key, e.target.value)}
-                          placeholder="0"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{ fontSize: '10px', color: '#5a5a70', marginTop: '10px' }}>Fields save automatically on blur</div>
+              <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
+                <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '14px' }}>Deal fees</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  {([
+                    { key: 'initial_offer', label: 'Initial offer (£)' },
+                    { key: 'counter_offer', label: 'Counter offer (£)' },
+                    { key: 'agreed_fee',    label: 'Agreed fee (£)' },
+                  ] as const).map(f => (
+                    <div key={f.key}>
+                      <label style={editLbl}>{f.label}</label>
+                      <input style={editInp} type="number" min="0" value={fees[f.key]}
+                        onChange={e => setFees(p => ({ ...p, [f.key]: e.target.value }))}
+                        onBlur={e => saveFeeField(f.key, e.target.value)} placeholder="0" />
+                    </div>
+                  ))}
                 </div>
+                <div style={{ fontSize: '10px', color: '#5a5a70', marginTop: '10px' }}>Fields save automatically on blur</div>
               </div>
-
-              {/* Right — real fee comparison */}
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
                 <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '16px' }}>Fee comparison</div>
                 {[
                   { label: "Creator's standard rate", value: standardRate, color: '#9090a8' },
-                  { label: 'Your initial offer',       value: initialOffer,  color: '#a898ff' },
-                  { label: 'Their counter offer',       value: counterOffer,  color: '#f5a623' },
+                  { label: 'Your initial offer',       value: initialOffer, color: '#a898ff' },
+                  { label: 'Their counter offer',       value: counterOffer, color: '#f5a623' },
                 ].map(row => (
                   <div key={row.label} style={{ marginBottom: '14px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}>
@@ -551,81 +660,115 @@ Reply: "${replyText}"`
                     </div>
                   </div>
                 ))}
-                {!standardRate && !initialOffer && !counterOffer && (
-                  <div style={{ fontSize: '11px', color: '#5a5a70', marginTop: '8px' }}>Enter fees on the left to see comparison</div>
-                )}
                 {counterOffer && initialOffer && (
                   <div style={{ marginTop: '14px', padding: '10px 12px', background: '#1e1e24', borderRadius: '6px', fontSize: '12px', color: '#9090a8' }}>
                     Counter is <span style={{ color: counterOffer > initialOffer ? '#f5a623' : '#3ecf8e', fontWeight: '500' }}>
-                      {counterOffer > initialOffer
-                        ? `£${(counterOffer - initialOffer).toLocaleString()} above`
-                        : `£${(initialOffer - counterOffer).toLocaleString()} below`}
+                      {counterOffer > initialOffer ? `£${(counterOffer - initialOffer).toLocaleString()} above` : `£${(initialOffer - counterOffer).toLocaleString()} below`}
                     </span> your initial offer
-                    {standardRate ? ` and ${counterOffer > standardRate
-                      ? `£${(counterOffer - standardRate).toLocaleString()} above`
-                      : `£${(standardRate - counterOffer).toLocaleString()} below`} their standard rate` : ''}.
+                    {(() => {
+                      if (!initialOffer || !counterOffer) return null
+                      const gap = ((counterOffer - initialOffer) / initialOffer) * 100
+                      const strategy = gap <= 20 ? 'accept' : gap <= 40 ? 'compromise' : 'hold'
+                      return (
+                        <span style={{ display: 'block', marginTop: '6px', color: strategy === 'accept' ? '#3ecf8e' : strategy === 'compromise' ? '#f5a623' : '#f06060', fontSize: '11px' }}>
+                          Suggested strategy: {strategy === 'accept' ? '✓ Accept their rate' : strategy === 'compromise' ? '⟷ Compromise in the middle' : '↓ Hold — gap is too large'}
+                        </span>
+                      )
+                    })()}
                   </div>
                 )}
               </div>
             </div>
           )}
 
-          {/* STEP 3 */}
+          {/* STEP 3 — Counter offer with send button */}
           {step === 3 && (
             <div>
               <div style={{ fontSize: '11px', color: '#5a5a70', background: '#1e1e24', borderRadius: '6px', padding: '8px 12px', borderLeft: '2px solid rgba(124,106,247,0.3)', marginBottom: '12px' }}>
-                AI drafts the counter-offer accepting the creator's terms, in your tone.
+                AI drafts the counter-offer based on the fee gap and negotiation strategy.
               </div>
+
+              {ai.counterStrategy && (
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '14px', alignItems: 'center' }}>
+                  <span style={{ fontSize: '11px', color: '#5a5a70' }}>Strategy:</span>
+                  <span style={{
+                    fontSize: '11px', padding: '3px 10px', borderRadius: '20px', fontFamily: 'monospace',
+                    background: ai.counterStrategy === 'accept' ? 'rgba(62,207,142,0.12)' : ai.counterStrategy === 'compromise' ? 'rgba(245,166,35,0.12)' : 'rgba(240,96,96,0.12)',
+                    color:      ai.counterStrategy === 'accept' ? '#3ecf8e' : ai.counterStrategy === 'compromise' ? '#f5a623' : '#f06060',
+                    border:     `1px solid ${ai.counterStrategy === 'accept' ? 'rgba(62,207,142,0.3)' : ai.counterStrategy === 'compromise' ? 'rgba(245,166,35,0.3)' : 'rgba(240,96,96,0.3)'}`,
+                  }}>
+                    {ai.counterStrategy === 'accept'
+                      ? `✓ Accepting at £${ai.counterRate?.toLocaleString()}`
+                      : ai.counterStrategy === 'compromise'
+                      ? `⟷ Compromising at £${ai.counterRate?.toLocaleString()}`
+                      : `↓ Holding at £${ai.counterRate?.toLocaleString()}`}
+                  </span>
+                  {fees.initial_offer && fees.counter_offer && (
+                    <span style={{ fontSize: '11px', color: '#5a5a70' }}>
+                      (gap: £{Math.abs(parseFloat(fees.counter_offer) - parseFloat(fees.initial_offer)).toLocaleString()})
+                    </span>
+                  )}
+                </div>
+              )}
+
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
-                {ai.counter ? emailDraft(ai.counter) : <div style={{ textAlign: 'center' as const, padding: '36px', color: '#5a5a70', fontSize: '13px' }}>Click "Draft counter-offer" to generate</div>}
+                {ai.counter ? (
+                  <div>
+                    {emailDraft(ai.counter)}
+                    <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <button
+                        onClick={sendCounter}
+                        disabled={aiLoading || ai.counterSent}
+                        style={{
+                          background: ai.counterSent ? 'rgba(62,207,142,0.12)' : '#7c6af7',
+                          color:      ai.counterSent ? '#3ecf8e' : '#fff',
+                          border:     ai.counterSent ? '1px solid rgba(62,207,142,0.3)' : 'none',
+                          borderRadius: '6px', padding: '8px 18px', fontSize: '13px', fontWeight: '500',
+                          cursor: ai.counterSent || aiLoading ? 'not-allowed' : 'pointer',
+                          opacity: aiLoading ? 0.6 : 1, fontFamily: 'sans-serif',
+                        }}
+                      >
+                        {ai.counterSent ? '✓ Counter offer sent' : `Send to ${creator?.email}`}
+                      </button>
+                      <button
+                        onClick={() => { setAi((p: any) => ({ ...p, counter: null, counterSent: false, counterStrategy: null })); genCounter() }}
+                        style={{ background: 'none', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '8px 14px', fontSize: '12px', color: '#9090a8', cursor: 'pointer' }}
+                      >
+                        Regenerate
+                      </button>
+                      {!ai.counterSent && <span style={{ fontSize: '11px', color: '#5a5a70' }}>Review above before sending</span>}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ textAlign: 'center' as const, padding: '36px', color: '#5a5a70', fontSize: '13px' }}>
+                    Click "Draft counter-offer" to generate based on the fee gap
+                  </div>
+                )}
               </div>
             </div>
           )}
 
-          {/* STEP 4 — terms agreed, all editable inline */}
+          {/* STEP 4 */}
           {step === 4 && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
                 <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '14px' }}>Confirm & lock deal terms</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <div>
-                    <label style={editLbl}>Agreed fee (£)</label>
-                    <input style={editInp} type="number" min="0" value={termsEdit.agreed_fee}
-                      onChange={e => setTermsEdit(t => ({ ...t, agreed_fee: e.target.value }))}
-                      onBlur={e => saveTermsField('agreed_fee', e.target.value)}
-                      placeholder="Final agreed fee" />
-                  </div>
-                  <div>
-                    <label style={editLbl}>Deliverables</label>
-                    <input style={editInp} value={termsEdit.deliverables}
-                      onChange={e => setTermsEdit(t => ({ ...t, deliverables: e.target.value }))}
-                      onBlur={e => saveTermsField('deliverables', e.target.value)}
-                      placeholder="e.g. 2 Reels + 1 Story" />
-                  </div>
-                  <div>
-                    <label style={editLbl}>Content due date</label>
-                    <input style={editInp} type="date" value={termsEdit.content_due_date}
-                      onChange={e => setTermsEdit(t => ({ ...t, content_due_date: e.target.value }))}
-                      onBlur={e => saveTermsField('content_due_date', e.target.value)} />
-                  </div>
+                  <div><label style={editLbl}>Agreed fee (£)</label>
+                    <input style={editInp} type="number" min="0" value={termsEdit.agreed_fee} onChange={e => setTermsEdit(t => ({ ...t, agreed_fee: e.target.value }))} onBlur={e => saveTermsField('agreed_fee', e.target.value)} placeholder="Final agreed fee" /></div>
+                  <div><label style={editLbl}>Deliverables</label>
+                    <input style={editInp} value={termsEdit.deliverables} onChange={e => setTermsEdit(t => ({ ...t, deliverables: e.target.value }))} onBlur={e => saveTermsField('deliverables', e.target.value)} placeholder="e.g. 2 Reels + 1 Story" /></div>
+                  <div><label style={editLbl}>Content due date</label>
+                    <input style={editInp} type="date" value={termsEdit.content_due_date} onChange={e => setTermsEdit(t => ({ ...t, content_due_date: e.target.value }))} onBlur={e => saveTermsField('content_due_date', e.target.value)} /></div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                    <div>
-                      <label style={editLbl}>Posting from</label>
-                      <input style={editInp} type="date" value={termsEdit.posting_from}
-                        onChange={e => setTermsEdit(t => ({ ...t, posting_from: e.target.value }))}
-                        onBlur={e => saveTermsField('posting_from', e.target.value)} />
-                    </div>
-                    <div>
-                      <label style={editLbl}>Posting to</label>
-                      <input style={editInp} type="date" value={termsEdit.posting_to}
-                        onChange={e => setTermsEdit(t => ({ ...t, posting_to: e.target.value }))}
-                        onBlur={e => saveTermsField('posting_to', e.target.value)} />
-                    </div>
+                    <div><label style={editLbl}>Posting from</label>
+                      <input style={editInp} type="date" value={termsEdit.posting_from} onChange={e => setTermsEdit(t => ({ ...t, posting_from: e.target.value }))} onBlur={e => saveTermsField('posting_from', e.target.value)} /></div>
+                    <div><label style={editLbl}>Posting to</label>
+                      <input style={editInp} type="date" value={termsEdit.posting_to} onChange={e => setTermsEdit(t => ({ ...t, posting_to: e.target.value }))} onBlur={e => saveTermsField('posting_to', e.target.value)} /></div>
                   </div>
                 </div>
                 <div style={{ fontSize: '10px', color: '#5a5a70', marginTop: '10px' }}>Fields save automatically on blur</div>
               </div>
-
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
                 <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '14px' }}>Fixed terms</div>
                 {[
@@ -704,15 +847,6 @@ Reply: "${replyText}"`
                   <div style={{ fontSize: '12px', color: '#9090a8', marginTop: '2px' }}>Signing link delivered · Today</div>
                 </div>
               </div>
-              <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
-                <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '10px' }}>Automated reminders</div>
-                {[{ l: 'Reminder 1', v: '48 hours — scheduled' }, { l: 'Reminder 2', v: '5 days — pending' }].map(r => (
-                  <div key={r.l} style={{ background: '#1e1e24', borderRadius: '6px', padding: '8px 10px', marginBottom: '6px' }}>
-                    <div style={{ fontSize: '10px', color: '#5a5a70', marginBottom: '3px' }}>{r.l}</div>
-                    <div style={{ fontSize: '13px', fontWeight: '500', color: '#e8e8f0' }}>{r.v}</div>
-                  </div>
-                ))}
-              </div>
             </div>
           )}
 
@@ -727,18 +861,6 @@ Reply: "${replyText}"`
                 </div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-                <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
-                  <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '10px' }}>Triggered automatically</div>
-                  {['Deal status set to Signed', 'Budget committed updated', 'Posting dates added to calendar', 'Creator notified with brief', `${campaign?.brand || 'Brand'} notified`].map((t, i, arr) => (
-                    <div key={t} style={{ display: 'flex', gap: '10px', padding: '6px 0' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                        <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#3ecf8e', flexShrink: 0, marginTop: '3px' }} />
-                        {i < arr.length - 1 && <div style={{ width: '1px', flex: 1, background: 'rgba(255,255,255,0.05)', margin: '3px 0', minHeight: '10px' }} />}
-                      </div>
-                      <div style={{ fontSize: '12px', fontWeight: '500', color: '#e8e8f0', paddingBottom: '4px' }}>{t}</div>
-                    </div>
-                  ))}
-                </div>
                 <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
                   <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '10px' }}>Time saved vs manual</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
@@ -765,44 +887,32 @@ Reply: "${replyText}"`
             </button>
           )}
           <div style={{ flex: 1 }} />
-          {step === 1 && !ai.replyText && <span style={{ fontSize: '11px', color: '#f5a623', fontFamily: 'monospace' }}>Paste the reply first</span>}
+          {step === 1 && !ai.replyText && <span style={{ fontSize: '11px', color: '#f5a623', fontFamily: 'monospace' }}>Load or paste the reply first</span>}
           {step === 6 && checked.size < 8 && <span style={{ fontSize: '11px', color: '#f5a623', fontFamily: 'monospace' }}>{checked.size}/8 items reviewed</span>}
           {step === 2 ? (
-  <div style={{ display: 'flex', gap: '8px' }}>
-    <button
-      onClick={() => {
-        setDone(p => new Set([...p, 2, 3]))
-        setStep(4)
-      }}
-      style={{ padding: '9px 20px', borderRadius: '6px', background: 'rgba(62,207,142,0.12)', color: '#3ecf8e', border: '1px solid rgba(62,207,142,0.25)', fontSize: '13px', fontWeight: '500', cursor: 'pointer', fontFamily: 'sans-serif' }}
-    >
-      Terms agreed →
-    </button>
-    <button
-      onClick={() => {
-        setDone(p => new Set([...p, 2]))
-        setStep(3)
-      }}
-      style={{ padding: '9px 20px', borderRadius: '6px', background: '#7c6af7', color: '#fff', border: 'none', fontSize: '13px', fontWeight: '500', cursor: 'pointer', fontFamily: 'sans-serif' }}
-    >
-      Draft counter-offer →
-    </button>
-  </div>
-) : (
-  <button
-    onClick={handleNext}
-    disabled={aiLoading || (step === 1 && !ai.replyText && !ai.reply) || (step === 6 && checked.size < 8)}
-    style={{ padding: '9px 20px', borderRadius: '6px', background: '#7c6af7', color: '#fff', border: 'none', fontSize: '13px', fontWeight: '500', cursor: aiLoading ? 'not-allowed' : 'pointer', opacity: aiLoading || (step === 6 && checked.size < 8) ? 0.5 : 1, fontFamily: 'sans-serif' }}
-  >
-    {step === 0 && !ai.email ? 'Generate email'
-      : step === 0 && ai.email && !emailSent && creator?.email ? 'Send email'
-      : step === 1 && !ai.reply ? 'Classify reply'
-      : step === 3 && !ai.counter ? 'Draft counter-offer'
-      : step === 5 && !ai.contract ? 'Generate contract'
-      : step === 8 ? 'Mark as signed'
-      : 'Next →'}
-  </button>
-)}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button onClick={() => { setDone(p => new Set([...p, 2, 3])); setStep(4) }}
+                style={{ padding: '9px 20px', borderRadius: '6px', background: 'rgba(62,207,142,0.12)', color: '#3ecf8e', border: '1px solid rgba(62,207,142,0.25)', fontSize: '13px', fontWeight: '500', cursor: 'pointer', fontFamily: 'sans-serif' }}>
+                Terms agreed →
+              </button>
+              <button onClick={() => { setDone(p => new Set([...p, 2])); setStep(3) }}
+                style={{ padding: '9px 20px', borderRadius: '6px', background: '#7c6af7', color: '#fff', border: 'none', fontSize: '13px', fontWeight: '500', cursor: 'pointer', fontFamily: 'sans-serif' }}>
+                Draft counter-offer →
+              </button>
+            </div>
+          ) : (
+            <button onClick={handleNext}
+              disabled={aiLoading || (step === 1 && !ai.replyText && !ai.reply) || (step === 6 && checked.size < 8)}
+              style={{ padding: '9px 20px', borderRadius: '6px', background: '#7c6af7', color: '#fff', border: 'none', fontSize: '13px', fontWeight: '500', cursor: aiLoading ? 'not-allowed' : 'pointer', opacity: aiLoading || (step === 6 && checked.size < 8) ? 0.5 : 1, fontFamily: 'sans-serif' }}>
+              {step === 0 && !ai.email ? 'Generate email'
+                : step === 0 && ai.email && !emailSent && creator?.email ? 'Send email'
+                : step === 1 && !ai.reply ? 'Classify reply'
+                : step === 3 && !ai.counter ? 'Draft counter-offer'
+                : step === 5 && !ai.contract ? 'Generate contract'
+                : step === 8 ? 'Mark as signed'
+                : 'Next →'}
+            </button>
+          )}
         </div>
       </div>
 
