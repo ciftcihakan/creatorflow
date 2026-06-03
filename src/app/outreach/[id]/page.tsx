@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 import { useRouter, useParams, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { pdf } from '@react-pdf/renderer'
+import { ContractDocument } from '@/components/contract/ContractDocument'
 
 const STEPS = [
   { title: 'Initial outreach email',     sub: 'AI drafts a personalised email from the campaign brief and creator profile', who: ['AI', 'Agency'],    ai: true  },
@@ -32,6 +34,9 @@ export default function OutreachFlow() {
   const [emailSent, setEmailSent]     = useState(false)
   const [polling, setPolling]         = useState(false)
   const [pollMessage, setPollMessage] = useState('')
+  // ── NEW: contract state ──────────────────────────────────────────────────
+  const [pdfUrl, setPdfUrl]                     = useState<string | null>(null)
+  const [signingLinkSent, setSigningLinkSent]   = useState(false)
 
   const [fees, setFees] = useState({
     initial_offer: '',
@@ -107,6 +112,11 @@ export default function OutreachFlow() {
             posting_from:     camp?.posting_from          || '',
             posting_to:       camp?.posting_to            || '',
           })
+
+          // Restore PDF url if already generated
+          if (deal.contract_pdf_url) setPdfUrl(deal.contract_pdf_url)
+          // Restore signing link sent state
+          if (deal.signing_token) setSigningLinkSent(true)
 
           const { data: thread } = await supabase
             .from('email_threads').select('*')
@@ -280,42 +290,27 @@ Reply: "${replyText}"`
 
   async function genCounter() {
     setAiLoading(true)
-
     const initial = fees.initial_offer ? parseFloat(fees.initial_offer) : null
     const counter = fees.counter_offer ? parseFloat(fees.counter_offer) : null
     const agreed  = fees.agreed_fee    ? parseFloat(fees.agreed_fee)    : null
-
-    // Decide strategy based on fee gap
     let strategy    = 'accept'
     let proposeRate = counter || initial
-
     if (initial && counter) {
       const gap = ((counter - initial) / initial) * 100
-      if (gap <= 20) {
-        strategy    = 'accept'
-        proposeRate = counter
-      } else if (gap <= 40) {
-        strategy    = 'compromise'
-        proposeRate = Math.round((initial + counter) / 2)
-      } else {
-        strategy    = 'hold'
-        proposeRate = Math.round(initial * 1.1)
-      }
+      if (gap <= 20)      { strategy = 'accept';     proposeRate = counter }
+      else if (gap <= 40) { strategy = 'compromise'; proposeRate = Math.round((initial + counter) / 2) }
+      else                { strategy = 'hold';       proposeRate = Math.round(initial * 1.1) }
     }
-
-    // Extract date request from reply analysis
     let dateRequest = ''
     try {
       const parsed = JSON.parse((ai.reply || '').replace(/```json|```/g, '').trim())
       dateRequest  = parsed.counter_date || ''
     } catch {}
-
     const strategyInstructions: Record<string, string> = {
       accept:     `Accept their proposed rate of £${proposeRate?.toLocaleString()} in full. Be warm and enthusiastic. Confirm all terms and say contract will follow shortly.`,
       compromise: `Their rate of £${counter?.toLocaleString()} is above our initial offer of £${initial?.toLocaleString()}. Propose a compromise rate of £${proposeRate?.toLocaleString()} — meet in the middle. Acknowledge their value, explain the budget constraint briefly, keep it positive.`,
       hold:       `Their rate of £${counter?.toLocaleString()} is significantly above our budget. Politely hold closer to our original offer, suggest £${proposeRate?.toLocaleString()} as our best rate. Highlight the campaign value — brand exposure, usage rights, long-term relationship potential.`,
     }
-
     const prompt = `Draft a professional counter-offer email from ${campaign?.brand || 'the brand'} to ${creator?.full_name}.
 
 Strategy: ${strategyInstructions[strategy]}
@@ -332,10 +327,8 @@ ${agreed ? `- Agreed fee already set: £${agreed.toLocaleString()}` : ''}
 Tone: ${tone === 'warm' ? 'warm and professional' : tone === 'casual' ? 'casual and direct' : 'formal'}
 
 Start with "Subject: [subject]" then blank line then body. Under 150 words. Be specific about the proposed rate. Confirm deliverables. End with a clear next step. Sign off from "${campaign?.brand || 'The Brand'} team".`
-
     const result = await callClaude(prompt, 400)
     setAi((p: any) => ({ ...p, counter: result, counterStrategy: strategy, counterRate: proposeRate }))
-
     if (dealRow) {
       await supabase.from('campaign_creators').update({ status: 'negotiating' }).eq('id', dealRow.id)
       setDealRow((d: any) => ({ ...d, status: 'negotiating' }))
@@ -363,16 +356,51 @@ Start with "Subject: [subject]" then blank line then body. Under 150 words. Be s
     setAiLoading(false)
   }
 
-  async function genContract() {
-    setAiLoading(true)
-    await new Promise(r => setTimeout(r, 1200))
-    setAi((p: any) => ({ ...p, contract: true }))
-    if (dealRow) {
-      await supabase.from('campaign_creators').update({ status: 'contract_out' }).eq('id', dealRow.id)
-      setDealRow((d: any) => ({ ...d, status: 'contract_out' }))
+  // ── UPDATED: actually generates PDF via API ───────────────────────────────
+async function genContract() {
+  setAiLoading(true)
+  try {
+    const contractData = {
+      brand:           campaign?.brand           || '',
+      creatorName:     creator?.full_name         || '',
+      handle:          platform?.handle           || '',
+      deliverables:    dealRow?.deliverables      || campaign?.deliverables || '',
+      product:         campaign?.product          || 'the product',
+      postingFrom:     campaign?.posting_from     || '',
+      postingTo:       campaign?.posting_to       || '',
+      agreedFee:       dealRow?.agreed_fee        || 0,
+      exclusivityDays: campaign?.exclusivity_days || 30,
+      usageMonths:     campaign?.usage_months     || 6,
+      contentDueDate:  dealRow?.content_due_date  || '',
+      campaignName:    campaign?.campaign_name    || '',
+      generatedAt:     new Date().toISOString(),
     }
-    setAiLoading(false)
+
+    const blob     = await pdf(<ContractDocument data={contractData} />).toBlob()
+    const fileName = `${dealRow?.id}_${Date.now()}.pdf`
+
+    const { error: uploadError } = await supabase.storage
+      .from('contracts')
+      .upload(fileName, blob, { contentType: 'application/pdf', upsert: true })
+
+    if (uploadError) throw uploadError
+
+    const { data: { publicUrl } } = supabase.storage
+      .from('contracts')
+      .getPublicUrl(fileName)
+
+    await supabase.from('campaign_creators')
+      .update({ contract_pdf_url: publicUrl, status: 'contract_out' })
+      .eq('id', dealRow.id)
+
+    setPdfUrl(publicUrl)
+    setAi((p: any) => ({ ...p, contract: true }))
+    setDealRow((d: any) => ({ ...d, status: 'contract_out', contract_pdf_url: publicUrl }))
+  } catch (err: any) {
+    alert('Error generating PDF: ' + err.message)
   }
+  setAiLoading(false)
+}
 
   async function handleNext() {
     if (step === 0 && !ai.email) { await genEmail(); return }
@@ -382,6 +410,7 @@ Start with "Subject: [subject]" then blank line then body. Under 150 words. Be s
     if (step === 1 && !ai.reply) { await classifyReply(); return }
     if (step === 3 && !ai.counter) { await genCounter(); return }
     if (step === 5 && !ai.contract) { await genContract(); return }
+    if (step === 7 && !signingLinkSent) { return }  // must send link first
     if (step === 8) {
       if (dealRow) await supabase.from('campaign_creators').update({ status: 'signed' }).eq('id', dealRow.id)
       router.push(campaignId ? `/campaigns/${campaignId}` : '/campaigns')
@@ -681,68 +710,39 @@ Start with "Subject: [subject]" then blank line then body. Under 150 words. Be s
             </div>
           )}
 
-          {/* STEP 3 — Counter offer with send button */}
+          {/* STEP 3 */}
           {step === 3 && (
             <div>
               <div style={{ fontSize: '11px', color: '#5a5a70', background: '#1e1e24', borderRadius: '6px', padding: '8px 12px', borderLeft: '2px solid rgba(124,106,247,0.3)', marginBottom: '12px' }}>
                 AI drafts the counter-offer based on the fee gap and negotiation strategy.
               </div>
-
               {ai.counterStrategy && (
                 <div style={{ display: 'flex', gap: '8px', marginBottom: '14px', alignItems: 'center' }}>
                   <span style={{ fontSize: '11px', color: '#5a5a70' }}>Strategy:</span>
-                  <span style={{
-                    fontSize: '11px', padding: '3px 10px', borderRadius: '20px', fontFamily: 'monospace',
-                    background: ai.counterStrategy === 'accept' ? 'rgba(62,207,142,0.12)' : ai.counterStrategy === 'compromise' ? 'rgba(245,166,35,0.12)' : 'rgba(240,96,96,0.12)',
-                    color:      ai.counterStrategy === 'accept' ? '#3ecf8e' : ai.counterStrategy === 'compromise' ? '#f5a623' : '#f06060',
-                    border:     `1px solid ${ai.counterStrategy === 'accept' ? 'rgba(62,207,142,0.3)' : ai.counterStrategy === 'compromise' ? 'rgba(245,166,35,0.3)' : 'rgba(240,96,96,0.3)'}`,
-                  }}>
-                    {ai.counterStrategy === 'accept'
-                      ? `✓ Accepting at £${ai.counterRate?.toLocaleString()}`
-                      : ai.counterStrategy === 'compromise'
-                      ? `⟷ Compromising at £${ai.counterRate?.toLocaleString()}`
-                      : `↓ Holding at £${ai.counterRate?.toLocaleString()}`}
+                  <span style={{ fontSize: '11px', padding: '3px 10px', borderRadius: '20px', fontFamily: 'monospace', background: ai.counterStrategy === 'accept' ? 'rgba(62,207,142,0.12)' : ai.counterStrategy === 'compromise' ? 'rgba(245,166,35,0.12)' : 'rgba(240,96,96,0.12)', color: ai.counterStrategy === 'accept' ? '#3ecf8e' : ai.counterStrategy === 'compromise' ? '#f5a623' : '#f06060', border: `1px solid ${ai.counterStrategy === 'accept' ? 'rgba(62,207,142,0.3)' : ai.counterStrategy === 'compromise' ? 'rgba(245,166,35,0.3)' : 'rgba(240,96,96,0.3)'}` }}>
+                    {ai.counterStrategy === 'accept' ? `✓ Accepting at £${ai.counterRate?.toLocaleString()}` : ai.counterStrategy === 'compromise' ? `⟷ Compromising at £${ai.counterRate?.toLocaleString()}` : `↓ Holding at £${ai.counterRate?.toLocaleString()}`}
                   </span>
                   {fees.initial_offer && fees.counter_offer && (
-                    <span style={{ fontSize: '11px', color: '#5a5a70' }}>
-                      (gap: £{Math.abs(parseFloat(fees.counter_offer) - parseFloat(fees.initial_offer)).toLocaleString()})
-                    </span>
+                    <span style={{ fontSize: '11px', color: '#5a5a70' }}>(gap: £{Math.abs(parseFloat(fees.counter_offer) - parseFloat(fees.initial_offer)).toLocaleString()})</span>
                   )}
                 </div>
               )}
-
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
                 {ai.counter ? (
                   <div>
                     {emailDraft(ai.counter)}
                     <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <button
-                        onClick={sendCounter}
-                        disabled={aiLoading || ai.counterSent}
-                        style={{
-                          background: ai.counterSent ? 'rgba(62,207,142,0.12)' : '#7c6af7',
-                          color:      ai.counterSent ? '#3ecf8e' : '#fff',
-                          border:     ai.counterSent ? '1px solid rgba(62,207,142,0.3)' : 'none',
-                          borderRadius: '6px', padding: '8px 18px', fontSize: '13px', fontWeight: '500',
-                          cursor: ai.counterSent || aiLoading ? 'not-allowed' : 'pointer',
-                          opacity: aiLoading ? 0.6 : 1, fontFamily: 'sans-serif',
-                        }}
-                      >
+                      <button onClick={sendCounter} disabled={aiLoading || ai.counterSent} style={{ background: ai.counterSent ? 'rgba(62,207,142,0.12)' : '#7c6af7', color: ai.counterSent ? '#3ecf8e' : '#fff', border: ai.counterSent ? '1px solid rgba(62,207,142,0.3)' : 'none', borderRadius: '6px', padding: '8px 18px', fontSize: '13px', fontWeight: '500', cursor: ai.counterSent || aiLoading ? 'not-allowed' : 'pointer', opacity: aiLoading ? 0.6 : 1, fontFamily: 'sans-serif' }}>
                         {ai.counterSent ? '✓ Counter offer sent' : `Send to ${creator?.email}`}
                       </button>
-                      <button
-                        onClick={() => { setAi((p: any) => ({ ...p, counter: null, counterSent: false, counterStrategy: null })); genCounter() }}
-                        style={{ background: 'none', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '8px 14px', fontSize: '12px', color: '#9090a8', cursor: 'pointer' }}
-                      >
+                      <button onClick={() => { setAi((p: any) => ({ ...p, counter: null, counterSent: false, counterStrategy: null })); genCounter() }} style={{ background: 'none', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '8px 14px', fontSize: '12px', color: '#9090a8', cursor: 'pointer' }}>
                         Regenerate
                       </button>
                       {!ai.counterSent && <span style={{ fontSize: '11px', color: '#5a5a70' }}>Review above before sending</span>}
                     </div>
                   </div>
                 ) : (
-                  <div style={{ textAlign: 'center' as const, padding: '36px', color: '#5a5a70', fontSize: '13px' }}>
-                    Click "Draft counter-offer" to generate based on the fee gap
-                  </div>
+                  <div style={{ textAlign: 'center' as const, padding: '36px', color: '#5a5a70', fontSize: '13px' }}>Click "Draft counter-offer" to generate based on the fee gap</div>
                 )}
               </div>
             </div>
@@ -790,17 +790,38 @@ Start with "Subject: [subject]" then blank line then body. Under 150 words. Be s
             </div>
           )}
 
-          {/* STEP 5 */}
+          {/* STEP 5 — Contract generated (UPDATED: real PDF + download) */}
           {step === 5 && (
             <div>
               <div style={{ fontSize: '11px', color: '#5a5a70', background: '#1e1e24', borderRadius: '6px', padding: '8px 12px', borderLeft: '2px solid rgba(124,106,247,0.3)', marginBottom: '12px' }}>
                 AI populates the contract from the locked deal summary.
               </div>
-              {ai.contract ? contractHtml() : <div style={{ textAlign: 'center' as const, padding: '36px', color: '#5a5a70', fontSize: '13px', background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px' }}>Click "Generate contract" to populate</div>}
+              {ai.contract ? (
+                <>
+                  {contractHtml()}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '8px' }}>
+                    {pdfUrl ? (
+                      <>
+                        <a href={pdfUrl} download target="_blank" rel="noopener noreferrer"
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: '#7c6af7', color: '#fff', textDecoration: 'none', borderRadius: '6px', padding: '8px 16px', fontSize: '12px', fontWeight: '500' }}>
+                          ↓ Download PDF
+                        </a>
+                        <span style={{ fontSize: '11px', color: '#3ecf8e' }}>✓ PDF generated and saved</span>
+                      </>
+                    ) : (
+                      <span style={{ fontSize: '11px', color: '#5a5a70' }}>Generating PDF...</span>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div style={{ textAlign: 'center' as const, padding: '36px', color: '#5a5a70', fontSize: '13px', background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px' }}>
+                  Click "Generate contract" to populate and create the PDF
+                </div>
+              )}
             </div>
           )}
 
-          {/* STEP 6 */}
+          {/* STEP 6 — Internal contract review */}
           {step === 6 && (() => {
             const agreedFee = dealRow?.agreed_fee ? `£${Number(dealRow.agreed_fee).toLocaleString()}` : 'TBC'
             const items = [
@@ -837,20 +858,61 @@ Start with "Subject: [subject]" then blank line then body. Under 150 words. Be s
             )
           })()}
 
-          {/* STEP 7 */}
+          {/* STEP 7 — Sent for e-signature (UPDATED: real send button) */}
           {step === 7 && (
             <div>
-              <div style={{ background: 'rgba(62,207,142,0.1)', border: '1px solid rgba(62,207,142,0.25)', borderRadius: '10px', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
-                <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#3ecf8e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', color: '#0f0f11', flexShrink: 0 }}>✉</div>
-                <div>
-                  <div style={{ fontSize: '13px', color: '#3ecf8e', fontWeight: '500' }}>Contract sent to {creator?.full_name}</div>
-                  <div style={{ fontSize: '12px', color: '#9090a8', marginTop: '2px' }}>Signing link delivered · Today</div>
+              {signingLinkSent ? (
+                <div style={{ background: 'rgba(62,207,142,0.1)', border: '1px solid rgba(62,207,142,0.25)', borderRadius: '10px', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
+                  <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#3ecf8e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', color: '#0f0f11', flexShrink: 0 }}>✉</div>
+                  <div>
+                    <div style={{ fontSize: '13px', color: '#3ecf8e', fontWeight: '500' }}>Signing link sent to {creator?.full_name}</div>
+                    <div style={{ fontSize: '12px', color: '#9090a8', marginTop: '2px' }}>Sent to {creator?.email} · Click "Next →" once they've signed</div>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div>
+                  <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '20px 24px', marginBottom: '14px' }}>
+                    <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '12px' }}>Ready to send</div>
+                    {[
+                      { l: 'Recipient',    v: `${creator?.full_name} — ${creator?.email || 'no email set'}` },
+                      { l: 'Agreement',   v: `${campaign?.brand} × ${campaign?.campaign_name}` },
+                      { l: 'Fee',         v: dealRow?.agreed_fee ? `£${Number(dealRow.agreed_fee).toLocaleString()}` : 'TBC' },
+                      { l: 'Link expires', v: '7 days from send' },
+                    ].map(r => (
+                      <div key={r.l} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', fontSize: '12px' }}>
+                        <span style={{ color: '#5a5a70' }}>{r.l}</span>
+                        <span style={{ color: '#e8e8f0' }}>{r.v}</span>
+                      </div>
+                    ))}
+                    {!creator?.email && (
+                      <div style={{ marginTop: '12px', padding: '8px 12px', background: 'rgba(245,166,35,0.1)', border: '1px solid rgba(245,166,35,0.25)', borderRadius: '6px', fontSize: '12px', color: '#f5a623' }}>
+                        ⚠ Creator has no email — add one to their profile before sending
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (!creator?.email) { alert('Add an email to the creator profile first'); return }
+                      setAiLoading(true)
+                      const res = await fetch('/api/contract/send-signing-link', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ deal_id: dealRow?.id, campaign_id: campaignId, creator_id: params.id }),
+                      })
+                      const data = await res.json()
+                      if (data.success) { setSigningLinkSent(true) }
+                      else { alert('Failed to send: ' + (data.error || 'Unknown error')) }
+                      setAiLoading(false)
+                    }}
+                    disabled={aiLoading || !creator?.email}
+                    style={{ background: creator?.email ? '#7c6af7' : '#26262e', color: creator?.email ? '#fff' : '#5a5a70', border: 'none', borderRadius: '8px', padding: '10px 22px', fontSize: '13px', fontWeight: '500', cursor: creator?.email && !aiLoading ? 'pointer' : 'not-allowed', opacity: aiLoading ? 0.6 : 1, fontFamily: 'sans-serif' }}>
+                    Send signing link to {creator?.full_name}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
-          {/* STEP 8 */}
+          {/* STEP 8 — Signed */}
           {step === 8 && (
             <div>
               <div style={{ background: 'rgba(62,207,142,0.1)', border: '1px solid rgba(62,207,142,0.25)', borderRadius: '10px', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
@@ -889,6 +951,7 @@ Start with "Subject: [subject]" then blank line then body. Under 150 words. Be s
           <div style={{ flex: 1 }} />
           {step === 1 && !ai.replyText && <span style={{ fontSize: '11px', color: '#f5a623', fontFamily: 'monospace' }}>Load or paste the reply first</span>}
           {step === 6 && checked.size < 8 && <span style={{ fontSize: '11px', color: '#f5a623', fontFamily: 'monospace' }}>{checked.size}/8 items reviewed</span>}
+          {step === 7 && !signingLinkSent && <span style={{ fontSize: '11px', color: '#f5a623', fontFamily: 'monospace' }}>Send the signing link first</span>}
           {step === 2 ? (
             <div style={{ display: 'flex', gap: '8px' }}>
               <button onClick={() => { setDone(p => new Set([...p, 2, 3])); setStep(4) }}
@@ -902,8 +965,8 @@ Start with "Subject: [subject]" then blank line then body. Under 150 words. Be s
             </div>
           ) : (
             <button onClick={handleNext}
-              disabled={aiLoading || (step === 1 && !ai.replyText && !ai.reply) || (step === 6 && checked.size < 8)}
-              style={{ padding: '9px 20px', borderRadius: '6px', background: '#7c6af7', color: '#fff', border: 'none', fontSize: '13px', fontWeight: '500', cursor: aiLoading ? 'not-allowed' : 'pointer', opacity: aiLoading || (step === 6 && checked.size < 8) ? 0.5 : 1, fontFamily: 'sans-serif' }}>
+              disabled={aiLoading || (step === 1 && !ai.replyText && !ai.reply) || (step === 6 && checked.size < 8) || (step === 7 && !signingLinkSent)}
+              style={{ padding: '9px 20px', borderRadius: '6px', background: '#7c6af7', color: '#fff', border: 'none', fontSize: '13px', fontWeight: '500', cursor: aiLoading ? 'not-allowed' : 'pointer', opacity: aiLoading || (step === 6 && checked.size < 8) || (step === 7 && !signingLinkSent) ? 0.5 : 1, fontFamily: 'sans-serif' }}>
               {step === 0 && !ai.email ? 'Generate email'
                 : step === 0 && ai.email && !emailSent && creator?.email ? 'Send email'
                 : step === 1 && !ai.reply ? 'Classify reply'
