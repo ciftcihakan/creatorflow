@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
             const emailLines = [
               `From: ${fromName || 'CreatorFlow'} <${connection.gmail_address}>`,
               `To: ${to}`,
-              `Subject: ${subject}`,
+              `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`,
               `Content-Type: text/plain; charset=utf-8`,
               ``,
               body,
