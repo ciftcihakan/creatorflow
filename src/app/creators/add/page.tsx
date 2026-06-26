@@ -47,7 +47,7 @@ export default function AddCreator() {
     email:            '',
     niche:            '',
     tier:             'micro',
-    standard_rate:    '',
+  
     estimated_rate:   '',
     audience_gender:  'Mixed',
     audience_age:     'Mixed',
@@ -158,7 +158,7 @@ export default function AddCreator() {
         email:            form.email            || null,
         niche:            form.niche ? form.niche.split(',').map(n => n.trim()).filter(Boolean) : null,
         tier:             form.tier,
-        standard_rate:    form.standard_rate    ? parseFloat(form.standard_rate)  : null,
+ 
         estimated_rate:   form.estimated_rate   ? parseFloat(form.estimated_rate) : null,
         follower_count:   totalFollowers        || null,
         engagement_rate:  avgEngagement,
@@ -358,11 +358,6 @@ export default function AddCreator() {
                   <select style={inp} value={form.tier} onChange={e => setForm(f => ({ ...f, tier: e.target.value }))}>
                     {TIERS.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
                   </select>
-                </div>
-                <div>
-                  <label style={lbl}>Standard rate (£)</label>
-                  <input style={inp} type="number" min="0" value={form.standard_rate} onChange={e => setForm(f => ({ ...f, standard_rate: e.target.value }))} placeholder="e.g. 1200" />
-                  <p style={hint}>Their typical asking rate</p>
                 </div>
                 <div>
                   <label style={lbl}>Estimated rate (£)</label>

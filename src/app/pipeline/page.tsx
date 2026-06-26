@@ -11,6 +11,8 @@ const STATUSES = [
   { key: 'negotiating',   label: 'Negotiating',   color: '#f5a623' },
   { key: 'contract_out',  label: 'Contract out',  color: '#a898ff' },
   { key: 'signed',        label: 'Signed',        color: '#3ecf8e' },
+  { key: 'declined',  label: 'Declined',   color: '#f06060' },
+  { key: 'gone_cold', label: 'Gone cold',  color: '#5a5a70' },
 ]
 
 const STATUS_STEP: Record<string, number> = {
@@ -27,6 +29,8 @@ const STATUS_COLOR: Record<string, { bg: string; border: string; text: string }>
   negotiating:   { bg: 'rgba(245,166,35,0.1)',  border: 'rgba(245,166,35,0.25)', text: '#f5a623' },
   contract_out:  { bg: 'rgba(168,152,255,0.1)', border: 'rgba(168,152,255,0.3)', text: '#a898ff' },
   signed:        { bg: 'rgba(62,207,142,0.12)', border: 'rgba(62,207,142,0.3)',  text: '#3ecf8e' },
+  declined:  { bg: 'rgba(240,96,96,0.1)',  border: 'rgba(240,96,96,0.25)',  text: '#f06060' },
+  gone_cold: { bg: 'rgba(90,90,112,0.15)', border: 'rgba(255,255,255,0.07)', text: '#9090a8' },
 }
 
 export default function PipelinePage() {
@@ -55,7 +59,7 @@ export default function PipelinePage() {
         .select(`
           *,
           campaigns ( id, campaign_name, brand, product, agency_id ),
-          creators  ( id, full_name, tier, niche, standard_rate, creator_platforms ( platform, handle, followers ) )
+          creators  ( id, full_name, tier, niche,  creator_platforms ( platform, handle, followers ) )
         `)
         .order('created_at', { ascending: false })
 

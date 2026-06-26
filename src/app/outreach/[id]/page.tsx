@@ -7,36 +7,36 @@ import { pdf } from '@react-pdf/renderer'
 import { ContractDocument } from '@/components/contract/ContractDocument'
 
 const STEPS = [
-  { title: 'Initial outreach email',     sub: 'AI drafts a personalised email from the campaign brief and creator profile', who: ['AI', 'Agency'],    ai: true  },
-  { title: 'Creator reply received',     sub: 'AI classifies intent and extracts proposed terms',                          who: ['Creator', 'AI'],   ai: true  },
-  { title: 'Internal rate review',       sub: 'Review and enter deal fees, approve terms to proceed',                     who: ['Agency', 'AI'],    ai: true  },
-  { title: 'Counter-offer drafted',      sub: 'AI drafts counter-offer based on approved terms',                          who: ['AI', 'Agency'],    ai: true  },
+  { title: 'Initial outreach email',     sub: 'AI drafts a personalised email from the campaign brief and creator profile', who: ['AI', 'Agency'],     ai: true  },
+  { title: 'Creator reply received',     sub: 'AI classifies intent and extracts proposed terms',                          who: ['Creator', 'AI'],    ai: true  },
+  { title: 'Internal rate review',       sub: 'Review and enter deal fees, approve terms to proceed',                     who: ['Agency', 'AI'],     ai: true  },
+  { title: 'Counter-offer drafted',      sub: 'AI drafts counter-offer based on approved terms',                          who: ['AI', 'Agency'],     ai: true  },
   { title: 'Terms agreed',               sub: 'Both sides confirmed — edit and lock the final deal',                      who: ['Agency', 'Creator'], ai: false },
-  { title: 'Contract generated',         sub: 'AI populates contract from the locked deal summary',                       who: ['AI'],              ai: true  },
-  { title: 'Internal contract review',   sub: 'Agency reviews and approves before sending',                               who: ['Agency'],          ai: false },
+  { title: 'Contract generated',         sub: 'AI populates contract from the locked deal summary',                       who: ['AI'],               ai: true  },
+  { title: 'Internal contract review',   sub: 'Agency reviews and approves before sending',                               who: ['Agency'],           ai: false },
   { title: 'Sent for e-signature',       sub: 'Creator receives signing link',                                            who: ['Agency', 'Creator'], ai: false },
-  { title: 'Signed — campaign unlocked', sub: 'Contract signed, campaign setup triggered',                                who: ['AI', 'Agency'],    ai: true  },
+  { title: 'Signed — campaign unlocked', sub: 'Contract signed, campaign setup triggered',                                who: ['AI', 'Agency'],     ai: true  },
 ]
 
 export default function OutreachFlow() {
-  const [creator, setCreator]         = useState<any>(null)
-  const [campaign, setCampaign]       = useState<any>(null)
-  const [dealRow, setDealRow]         = useState<any>(null)
-  const [emailThread, setEmailThread] = useState<any>(null)
-  const [agencyId, setAgencyId]       = useState<string | null>(null)
-  const [step, setStep]               = useState(0)
-  const [done, setDone]               = useState<Set<number>>(new Set())
-  const [ai, setAi]                   = useState<any>({})
-  const [tone, setTone]               = useState('warm')
-  const [checked, setChecked]         = useState<Set<number>>(new Set())
-  const [loading, setLoading]         = useState(true)
-  const [aiLoading, setAiLoading]     = useState(false)
-  const [emailSent, setEmailSent]     = useState(false)
-  const [polling, setPolling]         = useState(false)
-  const [pollMessage, setPollMessage] = useState('')
-  // ── NEW: contract state ──────────────────────────────────────────────────
+  const [creator, setCreator]                   = useState<any>(null)
+  const [campaign, setCampaign]                 = useState<any>(null)
+  const [dealRow, setDealRow]                   = useState<any>(null)
+  const [emailThread, setEmailThread]           = useState<any>(null)
+  const [agencyId, setAgencyId]                 = useState<string | null>(null)
+  const [step, setStep]                         = useState(0)
+  const [done, setDone]                         = useState<Set<number>>(new Set())
+  const [ai, setAi]                             = useState<any>({})
+  const [tone, setTone]                         = useState('warm')
+  const [checked, setChecked]                   = useState<Set<number>>(new Set())
+  const [loading, setLoading]                   = useState(true)
+  const [aiLoading, setAiLoading]               = useState(false)
+  const [emailSent, setEmailSent]               = useState(false)
+  const [polling, setPolling]                   = useState(false)
+  const [pollMessage, setPollMessage]           = useState('')
   const [pdfUrl, setPdfUrl]                     = useState<string | null>(null)
   const [signingLinkSent, setSigningLinkSent]   = useState(false)
+  const [manualCounterRate, setManualCounterRate] = useState('')  // ← manual rate override
 
   const [fees, setFees] = useState({
     initial_offer: '',
@@ -63,24 +63,19 @@ export default function OutreachFlow() {
       if (!user) { router.push('/auth/login'); return }
 
       const { data: profile } = await supabase
-        .from('profiles')
-        .select('agency_id')
-        .eq('id', user.id)
-        .single()
+        .from('profiles').select('agency_id').eq('id', user.id).single()
       const aid = profile?.agency_id || user.id
       setAgencyId(aid)
 
       const { data: cr } = await supabase
         .from('creators')
         .select('*, creator_platforms(platform, handle, followers)')
-        .eq('id', params.id)
-        .single()
+        .eq('id', params.id).single()
       if (!cr) { router.push('/campaigns'); return }
       setCreator(cr)
 
       if (campaignId) {
-        const { data: camp } = await supabase
-          .from('campaigns').select('*').eq('id', campaignId).single()
+        const { data: camp } = await supabase.from('campaigns').select('*').eq('id', campaignId).single()
         setCampaign(camp)
 
         const { data: deal } = await supabase
@@ -92,8 +87,7 @@ export default function OutreachFlow() {
 
         if (deal) {
           const statusStepMap: Record<string, number> = {
-            'outreach_sent': 0, 'replied': 1, 'negotiating': 3,
-            'contract_out':  5, 'signed':  8,
+            outreach_sent: 0, replied: 1, negotiating: 3, contract_out: 5, signed: 8,
           }
           const currentStep    = statusStepMap[deal.status] ?? 0
           const completedSteps = new Set<number>()
@@ -112,11 +106,8 @@ export default function OutreachFlow() {
             posting_from:     camp?.posting_from          || '',
             posting_to:       camp?.posting_to            || '',
           })
-
-          // Restore PDF url if already generated
           if (deal.contract_pdf_url) setPdfUrl(deal.contract_pdf_url)
-          // Restore signing link sent state
-          if (deal.signing_token) setSigningLinkSent(true)
+          if (deal.signing_token)    setSigningLinkSent(true)
 
           const { data: thread } = await supabase
             .from('email_threads').select('*')
@@ -127,9 +118,7 @@ export default function OutreachFlow() {
 
           if (thread) {
             setEmailThread(thread)
-            if (thread.last_reply_body) {
-              setAi((p: any) => ({ ...p, replyText: thread.last_reply_body }))
-            }
+            if (thread.last_reply_body) setAi((p: any) => ({ ...p, replyText: thread.last_reply_body }))
           }
         }
       }
@@ -178,10 +167,8 @@ export default function OutreachFlow() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         to: creator.email, subject, body,
-        fromName:    campaign?.brand || 'The Agency',
-        agency_id:   agencyId,
-        campaign_id: campaignId,
-        creator_id:  params.id,
+        fromName: campaign?.brand || 'The Agency',
+        agency_id: agencyId, campaign_id: campaignId, creator_id: params.id,
       }),
     })
     const data = await res.json()
@@ -189,9 +176,8 @@ export default function OutreachFlow() {
       const { data: thread } = await supabase
         .from('email_threads').select('*')
         .eq('campaign_id', campaignId)
-        .eq('creator_id', params.id as string)
-        .single()
-      if (thread) setEmailThread(thread)
+        .eq('creator_id', params.id as string).single()
+      if (thread) { setEmailThread(thread); console.log('Thread set:', thread) }
     }
     if (dealRow) {
       await supabase.from('campaign_creators').update({ status: 'outreach_sent' }).eq('id', dealRow.id)
@@ -293,24 +279,36 @@ Reply: "${replyText}"`
     const initial = fees.initial_offer ? parseFloat(fees.initial_offer) : null
     const counter = fees.counter_offer ? parseFloat(fees.counter_offer) : null
     const agreed  = fees.agreed_fee    ? parseFloat(fees.agreed_fee)    : null
+
     let strategy    = 'accept'
     let proposeRate = counter || initial
+
     if (initial && counter) {
       const gap = ((counter - initial) / initial) * 100
       if (gap <= 20)      { strategy = 'accept';     proposeRate = counter }
       else if (gap <= 40) { strategy = 'compromise'; proposeRate = Math.round((initial + counter) / 2) }
       else                { strategy = 'hold';       proposeRate = Math.round(initial * 1.1) }
     }
+
+    // Manual override wins if set
+    if (manualCounterRate) {
+      proposeRate = parseFloat(manualCounterRate)
+      strategy    = 'manual'
+    }
+
     let dateRequest = ''
     try {
       const parsed = JSON.parse((ai.reply || '').replace(/```json|```/g, '').trim())
       dateRequest  = parsed.counter_date || ''
     } catch {}
+
     const strategyInstructions: Record<string, string> = {
       accept:     `Accept their proposed rate of £${proposeRate?.toLocaleString()} in full. Be warm and enthusiastic. Confirm all terms and say contract will follow shortly.`,
       compromise: `Their rate of £${counter?.toLocaleString()} is above our initial offer of £${initial?.toLocaleString()}. Propose a compromise rate of £${proposeRate?.toLocaleString()} — meet in the middle. Acknowledge their value, explain the budget constraint briefly, keep it positive.`,
       hold:       `Their rate of £${counter?.toLocaleString()} is significantly above our budget. Politely hold closer to our original offer, suggest £${proposeRate?.toLocaleString()} as our best rate. Highlight the campaign value — brand exposure, usage rights, long-term relationship potential.`,
+      manual:     `Propose exactly £${proposeRate?.toLocaleString()} as our counter offer. Be professional and confident. Acknowledge their rate and explain this is our best offer. Keep it positive and focus on the campaign value.`,
     }
+
     const prompt = `Draft a professional counter-offer email from ${campaign?.brand || 'the brand'} to ${creator?.full_name}.
 
 Strategy: ${strategyInstructions[strategy]}
@@ -326,7 +324,8 @@ ${agreed ? `- Agreed fee already set: £${agreed.toLocaleString()}` : ''}
 
 Tone: ${tone === 'warm' ? 'warm and professional' : tone === 'casual' ? 'casual and direct' : 'formal'}
 
-Start with "Subject: [subject]" then blank line then body. Under 150 words. Be specific about the proposed rate. Confirm deliverables. End with a clear next step. Sign off from "${campaign?.brand || 'The Brand'} team".`
+Start with "Subject: [subject]" then blank line then body. Under 150 words. Be specific about the proposed rate of £${proposeRate?.toLocaleString()}. Confirm deliverables. End with a clear next step. Sign off from "${campaign?.brand || 'The Brand'} team".`
+
     const result = await callClaude(prompt, 400)
     setAi((p: any) => ({ ...p, counter: result, counterStrategy: strategy, counterRate: proposeRate }))
     if (dealRow) {
@@ -335,72 +334,67 @@ Start with "Subject: [subject]" then blank line then body. Under 150 words. Be s
     }
     setAiLoading(false)
   }
+  
 
-  async function sendCounter() {
-    if (!creator?.email || !ai.counter) return
-    setAiLoading(true)
-    const lines   = (ai.counter || '').split('\n')
-    const subject = lines[0].replace('Subject:', '').trim()
-    const body    = lines.slice(1).join('\n').trim()
-    await fetch('/api/send-email', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        to: creator.email, subject, body,
-        fromName:    campaign?.brand || 'The Agency',
-        agency_id:   agencyId,
-        campaign_id: campaignId,
-        creator_id:  params.id,
-      }),
-    })
-    setAi((p: any) => ({ ...p, counterSent: true }))
-    setAiLoading(false)
-  }
-
-  // ── UPDATED: actually generates PDF via API ───────────────────────────────
-async function genContract() {
+async function sendCounter() {
+  if (!creator?.email || !ai.counter) return
   setAiLoading(true)
-  try {
-    const contractData = {
-      brand:           campaign?.brand           || '',
-      creatorName:     creator?.full_name         || '',
-      handle:          platform?.handle           || '',
-      deliverables:    dealRow?.deliverables      || campaign?.deliverables || '',
-      product:         campaign?.product          || 'the product',
-      postingFrom:     campaign?.posting_from     || '',
-      postingTo:       campaign?.posting_to       || '',
-      agreedFee:       dealRow?.agreed_fee        || 0,
-      exclusivityDays: campaign?.exclusivity_days || 30,
-      usageMonths:     campaign?.usage_months     || 6,
-      contentDueDate:  dealRow?.content_due_date  || '',
-      campaignName:    campaign?.campaign_name    || '',
-      generatedAt:     new Date().toISOString(),
-    }
+  const lines   = (ai.counter || '').split('\n')
+  const body    = lines.slice(1).join('\n').trim()
+  const subject = emailThread?.subject
+    ? `Re: ${emailThread.subject.replace(/^Re:\s*/i, '')}`
+    : lines[0].replace('Subject:', '').trim()
 
-    const blob     = await pdf(<ContractDocument data={contractData} />).toBlob()
-    const fileName = `${dealRow?.id}_${Date.now()}.pdf`
-
-    const { error: uploadError } = await supabase.storage
-      .from('contracts')
-      .upload(fileName, blob, { contentType: 'application/pdf', upsert: true })
-
-    if (uploadError) throw uploadError
-
-    const { data: { publicUrl } } = supabase.storage
-      .from('contracts')
-      .getPublicUrl(fileName)
-
-    await supabase.from('campaign_creators')
-      .update({ contract_pdf_url: publicUrl, status: 'contract_out' })
-      .eq('id', dealRow.id)
-
-    setPdfUrl(publicUrl)
-    setAi((p: any) => ({ ...p, contract: true }))
-    setDealRow((d: any) => ({ ...d, status: 'contract_out', contract_pdf_url: publicUrl }))
-  } catch (err: any) {
-    alert('Error generating PDF: ' + err.message)
-  }
+  await fetch('/api/send-email', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      to: creator.email, subject, body,
+      fromName:            campaign?.brand || 'The Agency',
+      agency_id:           agencyId,
+      campaign_id:         campaignId,
+      creator_id:          params.id,
+      thread_id:           emailThread?.gmail_thread_id,
+      original_message_id: emailThread?.original_message_id,  // ← key addition
+    }),
+  })
+  setAi((p: any) => ({ ...p, counterSent: true }))
   setAiLoading(false)
 }
+
+  async function genContract() {
+    setAiLoading(true)
+    try {
+      const contractData = {
+        brand:           campaign?.brand            || '',
+        creatorName:     creator?.full_name          || '',
+        handle:          platform?.handle            || '',
+        deliverables:    dealRow?.deliverables       || campaign?.deliverables || '',
+        product:         campaign?.product           || 'the product',
+        postingFrom:     campaign?.posting_from      || '',
+        postingTo:       campaign?.posting_to        || '',
+        agreedFee:       dealRow?.agreed_fee         || 0,
+        exclusivityDays: campaign?.exclusivity_days  || 30,
+        usageMonths:     campaign?.usage_months      || 6,
+        contentDueDate:  dealRow?.content_due_date   || '',
+        campaignName:    campaign?.campaign_name     || '',
+        generatedAt:     new Date().toISOString(),
+      }
+      const blob     = await pdf(<ContractDocument data={contractData} />).toBlob()
+      const fileName = `${dealRow?.id}_${Date.now()}.pdf`
+      const { error: uploadError } = await supabase.storage
+        .from('contracts').upload(fileName, blob, { contentType: 'application/pdf', upsert: true })
+      if (uploadError) throw uploadError
+      const { data: { publicUrl } } = supabase.storage.from('contracts').getPublicUrl(fileName)
+      await supabase.from('campaign_creators')
+        .update({ contract_pdf_url: publicUrl, status: 'contract_out' }).eq('id', dealRow.id)
+      setPdfUrl(publicUrl)
+      setAi((p: any) => ({ ...p, contract: true }))
+      setDealRow((d: any) => ({ ...d, status: 'contract_out', contract_pdf_url: publicUrl }))
+    } catch (err: any) {
+      alert('Error generating PDF: ' + err.message)
+    }
+    setAiLoading(false)
+  }
 
   async function handleNext() {
     if (step === 0 && !ai.email) { await genEmail(); return }
@@ -410,7 +404,7 @@ async function genContract() {
     if (step === 1 && !ai.reply) { await classifyReply(); return }
     if (step === 3 && !ai.counter) { await genCounter(); return }
     if (step === 5 && !ai.contract) { await genContract(); return }
-    if (step === 7 && !signingLinkSent) { return }  // must send link first
+    if (step === 7 && !signingLinkSent) { return }
     if (step === 8) {
       if (dealRow) await supabase.from('campaign_creators').update({ status: 'signed' }).eq('id', dealRow.id)
       router.push(campaignId ? `/campaigns/${campaignId}` : '/campaigns')
@@ -453,12 +447,12 @@ async function genContract() {
   }
 
   function contractHtml() {
-    const platform = creator?.creator_platforms?.[0]
-    const rate     = dealRow?.agreed_fee || dealRow?.negotiation_fee || '—'
+    const plt  = creator?.creator_platforms?.[0]
+    const rate = dealRow?.agreed_fee || dealRow?.negotiation_fee || '—'
     return (
       <div style={{ background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '20px 24px', fontSize: '12px', lineHeight: '1.8', color: '#9090a8', fontFamily: 'monospace', marginBottom: '12px' }}>
         <h4 style={{ fontSize: '13px', color: '#e8e8f0', fontWeight: '500', marginBottom: '12px', textAlign: 'center' as const }}>INFLUENCER COLLABORATION AGREEMENT</h4>
-        <p style={{ marginBottom: '10px' }}>Between <span style={{ color: '#a898ff' }}>{campaign?.brand}</span> and <span style={{ color: '#a898ff' }}>{creator?.full_name}</span> (<span style={{ color: '#a898ff' }}>{platform?.handle}</span>).</p>
+        <p style={{ marginBottom: '10px' }}>Between <span style={{ color: '#a898ff' }}>{campaign?.brand}</span> and <span style={{ color: '#a898ff' }}>{creator?.full_name}</span> (<span style={{ color: '#a898ff' }}>{plt?.handle}</span>).</p>
         <p style={{ marginBottom: '10px' }}><strong style={{ color: '#e8e8f0' }}>1. Deliverables.</strong> Creator will produce <span style={{ color: '#a898ff' }}>{dealRow?.deliverables || campaign?.deliverables}</span> featuring {campaign?.product || 'the product'}.</p>
         <p style={{ marginBottom: '10px' }}><strong style={{ color: '#e8e8f0' }}>2. Posting window.</strong> Between <span style={{ color: '#3ecf8e' }}>{campaign?.posting_from}</span> and <span style={{ color: '#3ecf8e' }}>{campaign?.posting_to || 'end of window'}</span>.</p>
         <p style={{ marginBottom: '10px' }}><strong style={{ color: '#e8e8f0' }}>3. Compensation.</strong> Total fee: <span style={{ color: '#f5a623' }}>£{Number(rate).toLocaleString()}</span>.</p>
@@ -481,7 +475,7 @@ async function genContract() {
   const budget       = campaign?.budget ? `£${Number(campaign.budget).toLocaleString()}` : 'TBC'
   const win          = campaign?.posting_to ? `${campaign.posting_from} → ${campaign.posting_to}` : campaign?.posting_from || 'TBC'
   const backUrl      = campaignId ? `/campaigns/${campaignId}` : '/campaigns'
-  const standardRate = creator?.standard_rate ? Number(creator.standard_rate) : null
+  const standardRate = null
   const initialOffer = fees.initial_offer ? parseFloat(fees.initial_offer) : null
   const counterOffer = fees.counter_offer ? parseFloat(fees.counter_offer) : null
   const feeMax       = Math.max(standardRate || 0, initialOffer || 0, counterOffer || 0, 1)
@@ -507,7 +501,7 @@ async function genContract() {
               { v: platform?.followers ? Number(platform.followers).toLocaleString() : null, l: 'Followers' },
               { v: creator?.tier, l: 'Tier' },
               { v: Array.isArray(creator?.niche) ? creator.niche[0] : creator?.niche, l: 'Niche' },
-              { v: creator?.standard_rate ? `£${Number(creator.standard_rate).toLocaleString()}` : null, l: 'Rate' },
+       
             ].filter(x => x.v).map(x => (
               <div key={x.l} style={{ background: '#26262e', borderRadius: '4px', padding: '5px 7px' }}>
                 <div style={{ fontSize: '11px', color: '#a898ff', fontFamily: 'monospace', fontWeight: '500', textTransform: 'capitalize' as const }}>{x.v}</div>
@@ -515,12 +509,46 @@ async function genContract() {
               </div>
             ))}
           </div>
-          {dealRow?.status && (
-            <div style={{ marginTop: '8px', fontSize: '11px', padding: '3px 8px', borderRadius: '20px', background: 'rgba(124,106,247,0.12)', color: '#a898ff', border: '1px solid rgba(124,106,247,0.3)', display: 'inline-block' }}>
-              {dealRow.status.replace(/_/g, ' ')}
-            </div>
-          )}
-        </div>
+ {dealRow?.status && (
+  <div style={{ marginTop: '8px', fontSize: '11px', padding: '3px 8px', borderRadius: '20px', background: 'rgba(124,106,247,0.12)', color: '#a898ff', border: '1px solid rgba(124,106,247,0.3)', display: 'inline-block' }}>
+    {dealRow.status.replace(/_/g, ' ')}
+  </div>
+)}
+<div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column' as const, gap: '6px' }}>
+  {dealRow?.status !== 'declined' && dealRow?.status !== 'gone_cold' && dealRow?.status !== 'signed' && (
+    <>
+      <button
+        onClick={async () => {
+          if (!confirm('Mark this creator as declined?')) return
+          await supabase.from('campaign_creators').update({ status: 'declined' }).eq('id', dealRow.id)
+          setDealRow((d: any) => ({ ...d, status: 'declined' }))
+        }}
+        style={{ background: 'rgba(240,96,96,0.1)', border: '1px solid rgba(240,96,96,0.25)', borderRadius: '6px', padding: '5px 10px', color: '#f06060', fontSize: '11px', cursor: 'pointer', textAlign: 'left' as const }}>
+        ✕ Mark as declined
+      </button>
+      <button
+        onClick={async () => {
+          if (!confirm('Mark this creator as gone cold?')) return
+          await supabase.from('campaign_creators').update({ status: 'gone_cold' }).eq('id', dealRow.id)
+          setDealRow((d: any) => ({ ...d, status: 'gone_cold' }))
+        }}
+        style={{ background: 'rgba(90,90,112,0.15)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '6px', padding: '5px 10px', color: '#9090a8', fontSize: '11px', cursor: 'pointer', textAlign: 'left' as const }}>
+        ❄ Mark as gone cold
+      </button>
+    </>
+  )}
+  {(dealRow?.status === 'declined' || dealRow?.status === 'gone_cold') && (
+    <button
+      onClick={async () => {
+        await supabase.from('campaign_creators').update({ status: 'outreach_sent' }).eq('id', dealRow.id)
+        setDealRow((d: any) => ({ ...d, status: 'outreach_sent' }))
+      }}
+      style={{ background: 'rgba(124,106,247,0.1)', border: '1px solid rgba(124,106,247,0.3)', borderRadius: '6px', padding: '5px 10px', color: '#a898ff', fontSize: '11px', cursor: 'pointer', textAlign: 'left' as const }}>
+      ↩ Reopen deal
+    </button>
+  )}
+</div>
+</div>
 
         {campaign && (
           <div style={{ margin: '0 12px 12px', background: '#1e1e24', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '12px' }}>
@@ -584,7 +612,7 @@ async function genContract() {
             </div>
           )}
 
-          {/* STEP 0 */}
+          {/* STEP 0 — Initial outreach email */}
           {step === 0 && (
             <div>
               <div style={{ fontSize: '11px', color: '#5a5a70', background: '#1e1e24', borderRadius: '6px', padding: '8px 12px', borderLeft: '2px solid rgba(124,106,247,0.3)', marginBottom: '12px', lineHeight: '1.5' }}>
@@ -613,7 +641,7 @@ async function genContract() {
             </div>
           )}
 
-          {/* STEP 1 */}
+          {/* STEP 1 — Creator reply received */}
           {step === 1 && (
             <div>
               <div style={{ background: emailThread ? 'rgba(62,207,142,0.08)' : '#1e1e24', border: `1px solid ${emailThread ? 'rgba(62,207,142,0.2)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '8px', padding: '10px 14px', marginBottom: '14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -629,9 +657,7 @@ async function genContract() {
                   </button>
                 )}
               </div>
-              {pollMessage && (
-                <div style={{ fontSize: '12px', color: pollMessage.startsWith('✓') ? '#3ecf8e' : '#f5a623', marginBottom: '12px', padding: '8px 12px', background: '#1e1e24', borderRadius: '6px' }}>{pollMessage}</div>
-              )}
+              {pollMessage && <div style={{ fontSize: '12px', color: pollMessage.startsWith('✓') ? '#3ecf8e' : '#f5a623', marginBottom: '12px', padding: '8px 12px', background: '#1e1e24', borderRadius: '6px' }}>{pollMessage}</div>}
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px', marginBottom: '14px' }}>
                 <div style={{ fontSize: '11px', color: '#5a5a70', fontFamily: 'monospace', marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span>{ai.replyText ? `Reply from ${creator?.full_name}` : `Paste ${creator?.full_name}'s reply below`}</span>
@@ -649,7 +675,7 @@ async function genContract() {
             </div>
           )}
 
-          {/* STEP 2 */}
+          {/* STEP 2 — Internal rate review */}
           {step === 2 && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
@@ -657,7 +683,7 @@ async function genContract() {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                   {([
                     { key: 'initial_offer', label: 'Initial offer (£)' },
-                    { key: 'counter_offer', label: 'Counter offer (£)' },
+                    { key: 'counter_offer', label: "Creator's ask (£)" },
                     { key: 'agreed_fee',    label: 'Agreed fee (£)' },
                   ] as const).map(f => (
                     <div key={f.key}>
@@ -673,9 +699,9 @@ async function genContract() {
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
                 <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '16px' }}>Fee comparison</div>
                 {[
-                  { label: "Creator's standard rate", value: standardRate, color: '#9090a8' },
+   
                   { label: 'Your initial offer',       value: initialOffer, color: '#a898ff' },
-                  { label: 'Their counter offer',       value: counterOffer, color: '#f5a623' },
+                  { label: "Creator's ask",            value: counterOffer, color: '#f5a623' },
                 ].map(row => (
                   <div key={row.label} style={{ marginBottom: '14px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}>
@@ -691,16 +717,15 @@ async function genContract() {
                 ))}
                 {counterOffer && initialOffer && (
                   <div style={{ marginTop: '14px', padding: '10px 12px', background: '#1e1e24', borderRadius: '6px', fontSize: '12px', color: '#9090a8' }}>
-                    Counter is <span style={{ color: counterOffer > initialOffer ? '#f5a623' : '#3ecf8e', fontWeight: '500' }}>
-                      {counterOffer > initialOffer ? `£${(counterOffer - initialOffer).toLocaleString()} above` : `£${(initialOffer - counterOffer).toLocaleString()} below`}
-                    </span> your initial offer
+                    Gap: <span style={{ color: counterOffer > initialOffer ? '#f5a623' : '#3ecf8e', fontWeight: '500' }}>
+                      £{Math.abs(counterOffer - initialOffer).toLocaleString()} {counterOffer > initialOffer ? 'above' : 'below'} your offer
+                    </span>
                     {(() => {
-                      if (!initialOffer || !counterOffer) return null
                       const gap = ((counterOffer - initialOffer) / initialOffer) * 100
                       const strategy = gap <= 20 ? 'accept' : gap <= 40 ? 'compromise' : 'hold'
                       return (
                         <span style={{ display: 'block', marginTop: '6px', color: strategy === 'accept' ? '#3ecf8e' : strategy === 'compromise' ? '#f5a623' : '#f06060', fontSize: '11px' }}>
-                          Suggested strategy: {strategy === 'accept' ? '✓ Accept their rate' : strategy === 'compromise' ? '⟷ Compromise in the middle' : '↓ Hold — gap is too large'}
+                          AI suggestion: {strategy === 'accept' ? '✓ Accept their rate' : strategy === 'compromise' ? '⟷ Compromise in the middle' : '↓ Hold — gap is too large'}
                         </span>
                       )
                     })()}
@@ -710,23 +735,53 @@ async function genContract() {
             </div>
           )}
 
-          {/* STEP 3 */}
+          {/* STEP 3 — Counter-offer drafted */}
           {step === 3 && (
             <div>
               <div style={{ fontSize: '11px', color: '#5a5a70', background: '#1e1e24', borderRadius: '6px', padding: '8px 12px', borderLeft: '2px solid rgba(124,106,247,0.3)', marginBottom: '12px' }}>
-                AI drafts the counter-offer based on the fee gap and negotiation strategy.
+                AI drafts the counter-offer. Set your own rate below to override the AI suggestion.
               </div>
+
+              {/* Manual rate override */}
+              <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '14px 18px', marginBottom: '14px' }}>
+                <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '10px' }}>Your counter rate</div>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                  <div style={{ position: 'relative' as const }}>
+                    <span style={{ position: 'absolute' as const, left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#5a5a70', fontSize: '13px' }}>£</span>
+                    <input
+                      type="number"
+                      value={manualCounterRate}
+                      onChange={e => setManualCounterRate(e.target.value)}
+                      placeholder="e.g. 1250"
+                      style={{ background: '#26262e', border: `1px solid ${manualCounterRate ? 'rgba(124,106,247,0.4)' : 'rgba(255,255,255,0.07)'}`, borderRadius: '6px', padding: '8px 12px 8px 24px', color: '#e8e8f0', fontSize: '13px', outline: 'none', width: '140px', fontFamily: 'sans-serif' }}
+                    />
+                  </div>
+                  {manualCounterRate ? (
+                    <span style={{ fontSize: '11px', color: '#a898ff' }}>✓ Will propose £{Number(manualCounterRate).toLocaleString()}</span>
+                  ) : (
+                    <span style={{ fontSize: '11px', color: '#5a5a70' }}>Leave blank to let AI decide based on the fee gap</span>
+                  )}
+                  {manualCounterRate && (
+                    <button onClick={() => setManualCounterRate('')} style={{ background: 'none', border: 'none', color: '#5a5a70', fontSize: '11px', cursor: 'pointer', padding: '0' }}>Clear</button>
+                  )}
+                </div>
+              </div>
+
               {ai.counterStrategy && (
                 <div style={{ display: 'flex', gap: '8px', marginBottom: '14px', alignItems: 'center' }}>
                   <span style={{ fontSize: '11px', color: '#5a5a70' }}>Strategy:</span>
-                  <span style={{ fontSize: '11px', padding: '3px 10px', borderRadius: '20px', fontFamily: 'monospace', background: ai.counterStrategy === 'accept' ? 'rgba(62,207,142,0.12)' : ai.counterStrategy === 'compromise' ? 'rgba(245,166,35,0.12)' : 'rgba(240,96,96,0.12)', color: ai.counterStrategy === 'accept' ? '#3ecf8e' : ai.counterStrategy === 'compromise' ? '#f5a623' : '#f06060', border: `1px solid ${ai.counterStrategy === 'accept' ? 'rgba(62,207,142,0.3)' : ai.counterStrategy === 'compromise' ? 'rgba(245,166,35,0.3)' : 'rgba(240,96,96,0.3)'}` }}>
-                    {ai.counterStrategy === 'accept' ? `✓ Accepting at £${ai.counterRate?.toLocaleString()}` : ai.counterStrategy === 'compromise' ? `⟷ Compromising at £${ai.counterRate?.toLocaleString()}` : `↓ Holding at £${ai.counterRate?.toLocaleString()}`}
+                  <span style={{ fontSize: '11px', padding: '3px 10px', borderRadius: '20px', fontFamily: 'monospace', background: ai.counterStrategy === 'accept' ? 'rgba(62,207,142,0.12)' : ai.counterStrategy === 'manual' ? 'rgba(124,106,247,0.12)' : ai.counterStrategy === 'compromise' ? 'rgba(245,166,35,0.12)' : 'rgba(240,96,96,0.12)', color: ai.counterStrategy === 'accept' ? '#3ecf8e' : ai.counterStrategy === 'manual' ? '#a898ff' : ai.counterStrategy === 'compromise' ? '#f5a623' : '#f06060', border: `1px solid ${ai.counterStrategy === 'accept' ? 'rgba(62,207,142,0.3)' : ai.counterStrategy === 'manual' ? 'rgba(124,106,247,0.3)' : ai.counterStrategy === 'compromise' ? 'rgba(245,166,35,0.3)' : 'rgba(240,96,96,0.3)'}` }}>
+                    {ai.counterStrategy === 'manual'
+                      ? `✎ Manual — proposing £${ai.counterRate?.toLocaleString()}`
+                      : ai.counterStrategy === 'accept'
+                      ? `✓ Accepting at £${ai.counterRate?.toLocaleString()}`
+                      : ai.counterStrategy === 'compromise'
+                      ? `⟷ Compromising at £${ai.counterRate?.toLocaleString()}`
+                      : `↓ Holding at £${ai.counterRate?.toLocaleString()}`}
                   </span>
-                  {fees.initial_offer && fees.counter_offer && (
-                    <span style={{ fontSize: '11px', color: '#5a5a70' }}>(gap: £{Math.abs(parseFloat(fees.counter_offer) - parseFloat(fees.initial_offer)).toLocaleString()})</span>
-                  )}
                 </div>
               )}
+
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
                 {ai.counter ? (
                   <div>
@@ -742,13 +797,15 @@ async function genContract() {
                     </div>
                   </div>
                 ) : (
-                  <div style={{ textAlign: 'center' as const, padding: '36px', color: '#5a5a70', fontSize: '13px' }}>Click "Draft counter-offer" to generate based on the fee gap</div>
+                  <div style={{ textAlign: 'center' as const, padding: '36px', color: '#5a5a70', fontSize: '13px' }}>
+                    {manualCounterRate ? `Click "Draft counter-offer" to propose £${Number(manualCounterRate).toLocaleString()}` : 'Click "Draft counter-offer" to generate based on the fee gap'}
+                  </div>
                 )}
               </div>
             </div>
           )}
 
-          {/* STEP 4 */}
+          {/* STEP 4 — Terms agreed */}
           {step === 4 && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
               <div style={{ background: '#16161a', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '10px', padding: '16px 18px' }}>
@@ -790,7 +847,7 @@ async function genContract() {
             </div>
           )}
 
-          {/* STEP 5 — Contract generated (UPDATED: real PDF + download) */}
+          {/* STEP 5 — Contract generated */}
           {step === 5 && (
             <div>
               <div style={{ fontSize: '11px', color: '#5a5a70', background: '#1e1e24', borderRadius: '6px', padding: '8px 12px', borderLeft: '2px solid rgba(124,106,247,0.3)', marginBottom: '12px' }}>
@@ -858,7 +915,7 @@ async function genContract() {
             )
           })()}
 
-          {/* STEP 7 — Sent for e-signature (UPDATED: real send button) */}
+          {/* STEP 7 — Sent for e-signature */}
           {step === 7 && (
             <div>
               {signingLinkSent ? (
@@ -875,8 +932,8 @@ async function genContract() {
                     <div style={{ fontSize: '10px', color: '#5a5a70', textTransform: 'uppercase' as const, letterSpacing: '0.07em', marginBottom: '12px' }}>Ready to send</div>
                     {[
                       { l: 'Recipient',    v: `${creator?.full_name} — ${creator?.email || 'no email set'}` },
-                      { l: 'Agreement',   v: `${campaign?.brand} × ${campaign?.campaign_name}` },
-                      { l: 'Fee',         v: dealRow?.agreed_fee ? `£${Number(dealRow.agreed_fee).toLocaleString()}` : 'TBC' },
+                      { l: 'Agreement',    v: `${campaign?.brand} × ${campaign?.campaign_name}` },
+                      { l: 'Fee',          v: dealRow?.agreed_fee ? `£${Number(dealRow.agreed_fee).toLocaleString()}` : 'TBC' },
                       { l: 'Link expires', v: '7 days from send' },
                     ].map(r => (
                       <div key={r.l} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', fontSize: '12px' }}>
@@ -894,7 +951,7 @@ async function genContract() {
                     onClick={async () => {
                       if (!creator?.email) { alert('Add an email to the creator profile first'); return }
                       setAiLoading(true)
-                      const res = await fetch('/api/contract/send-signing-link', {
+                      const res  = await fetch('/api/contract/send-signing-link', {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ deal_id: dealRow?.id, campaign_id: campaignId, creator_id: params.id }),
                       })
@@ -955,7 +1012,7 @@ async function genContract() {
           {step === 2 ? (
             <div style={{ display: 'flex', gap: '8px' }}>
               <button onClick={() => { setDone(p => new Set([...p, 2, 3])); setStep(4) }}
-                style={{ padding: '9px 20px', borderRadius: '6px', background: 'rgba(62,207,142,0.12)', color: '#3ecf8e', border: '1px solid rgba(62,207,142,0.25)', fontSize: '13px', fontWeight: '500', cursor: 'pointer', fontFamily: 'sans-serif' }}>
+                style={{ padding: '9px 20px', borderRadius: '6px', background: 'rgba(62,207,142,0.12)', color: '#3ecf8e', border: '1px solid rgba(62,207,14,0.25)', fontSize: '13px', fontWeight: '500', cursor: 'pointer', fontFamily: 'sans-serif' }}>
                 Terms agreed →
               </button>
               <button onClick={() => { setDone(p => new Set([...p, 2])); setStep(3) }}

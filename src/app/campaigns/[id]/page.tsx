@@ -98,7 +98,7 @@ export default function CampaignPipeline() {
         .select(`
           *,
           creators (
-            id, full_name, first_name, last_name, email, niche, tier, standard_rate, status,
+            id, full_name, first_name, last_name, email, niche, tier, status,
             creator_platforms ( platform, handle, followers )
           )
         `)
